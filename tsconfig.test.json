@@ -1,0 +1,22 @@
+{
+  "//": "Tests run in node, so the pure modules are compiled to CommonJS here. Only files free of React Native and Expo imports are listed - that boundary is what makes the protocol testable without a device.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "outDir": ".test-build",
+    "types": ["node"]
+  },
+  "include": [
+    "src/lib/bytes.ts",
+    "src/ota/protocol.ts",
+    "src/ota/image.ts",
+    "src/ota/session.ts",
+    "tests/**/*.ts"
+  ]
+}

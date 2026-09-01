@@ -2,5 +2,7 @@
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
     "strict": true
-  }
+  },
+  "//": "tests/ runs in node, not React Native, so it is typechecked by tsconfig.test.json instead - node globals do not exist in this config.",
+  "exclude": ["tests", ".test-build", "node_modules"]
 }

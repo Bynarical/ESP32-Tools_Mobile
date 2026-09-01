@@ -4,19 +4,25 @@
   "main": "index.ts",
   "dependencies": {
     "expo": "~57.0.18",
+    "expo-dev-client": "~57.0.16",
+    "expo-file-system": "~57.0.6",
     "expo-status-bar": "~57.0.1",
+    "expo-system-ui": "~57.0.3",
     "react": "19.2.3",
-    "react-native": "0.86.3"
+    "react-native": "0.86.3",
+    "react-native-ble-plx": "^3.5.1"
   },
   "devDependencies": {
+    "@types/node": "^26.4.0",
     "@types/react": "~19.2.2",
     "typescript": "~6.0.3"
   },
   "scripts": {
     "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
-    "web": "expo start --web"
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "test": "tsc -p tsconfig.test.json && node --test .test-build/tests/wire.test.js .test-build/tests/session.test.js",
+    "typecheck": "tsc --noEmit"
   },
   "private": true
 }

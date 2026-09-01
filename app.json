@@ -1,25 +1,35 @@
 {
   "expo": {
-    "name": "ESP32-OTA-Mobile",
-    "slug": "ESP32-OTA-Mobile",
+    "name": "ESP32 OTA",
+    "slug": "esp32-ota-mobile",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0d0f14",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.bynarical.esp32ota"
     },
     "android": {
+      "package": "com.bynarical.esp32ota",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#0d0f14",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false
     },
-    "web": {
-      "favicon": "./assets/favicon.png"
-    }
+    "plugins": [
+      [
+        "react-native-ble-plx",
+        {
+          "isBackgroundEnabled": false,
+          "neverForLocation": true,
+          "bluetoothAlwaysPermission": "ESP32 OTA uses Bluetooth to find your board and send firmware to it."
+        }
+      ]
+    ]
   }
 }
