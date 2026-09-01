@@ -19,7 +19,12 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.BLUETOOTH",
+        "android.permission.BLUETOOTH_ADMIN",
+        "android.permission.BLUETOOTH_CONNECT"
+      ]
     },
     "plugins": [
       [
@@ -30,6 +35,12 @@
           "bluetoothAlwaysPermission": "ESP32 OTA uses Bluetooth to find your board and send firmware to it."
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "863fd451-2e29-47b1-affd-8f4515e5129e"
+      }
+    },
+    "owner": "mjk0531"
   }
 }
