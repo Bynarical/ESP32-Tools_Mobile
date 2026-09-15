@@ -1,19 +1,22 @@
 /**
- * ESP32 BLE OTA - one screen, three steps: find the board, pick the image,
- * send it.
+ * ESP32 BLE OTA - one screen: find the board, change its settings if you want
+ * to, pick the image, send it.
  *
  * The protocol lives in src/ota/; this file is only presentation and wiring, so
  * that the part which can be wrong in a way you cannot see is the part that is
  * unit-tested.
  */
 import { StatusBar } from 'expo-status-bar';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 
@@ -25,7 +28,17 @@ import {
   requestBlePermissions,
   scanForBoards,
 } from './src/ble/transport';
-import { formatBytes } from './src/lib/bytes';
+import { formatBytes, utf8Length } from './src/lib/bytes';
+import {
+  CFG_LIMITS,
+  StoredConfig,
+  configProblem,
+  describeConfig,
+  pendingConfig,
+  summarizeStored,
+} from './src/ota/config';
+import { ConfigSession } from './src/ota/configSession';
+import { DEFAULT_DEVICE_NAME } from './src/ota/protocol';
 import { LoadedFirmware, pickFirmware } from './src/ota/firmwareFile';
 import { summarize } from './src/ota/image';
 import { OtaSession, Phase, Progress } from './src/ota/session';
@@ -54,6 +67,102 @@ const PHASE_TEXT: Record<Phase, string> = {
   done: 'Done',
 };
 
+/**
+ * Connect, run one settings exchange, close.
+ *
+ * The CFG characteristic is write-encrypted exactly like CTRL and DATA, so this
+ * is the same connect-and-bond dance as an upload - just far shorter. The
+ * session is built after the link but the sink is wired before it, so an
+ * acknowledgement that arrives during setup is not dropped on the floor.
+ */
+async function withConfigSession<T>(
+  deviceId: string,
+  addLog: (msg: string, level?: LogLine['level']) => void,
+  onStored: (s: StoredConfig) => void,
+  fn: (session: ConfigSession) => Promise<T>
+): Promise<T> {
+  let link: BoardLink | null = null;
+  try {
+    let session: ConfigSession | null = null;
+    link = await BoardLink.connect(
+      deviceId,
+      (bytes) => session?.pushStatus(bytes),
+      () => session?.noteDisconnected()
+    );
+    session = new ConfigSession(link, { onLog: addLog, onStored });
+    return await fn(session);
+  } finally {
+    await link?.close();
+  }
+}
+
+/**
+ * Alert.alert as a promise - the phone's version of the desktop app's confirm
+ * dialog. A settings write restarts the board, so it gets the same "here is
+ * exactly what is about to happen" step rather than firing on one tap.
+ */
+function confirm(
+  title: string,
+  message: string,
+  confirmLabel: string
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    Alert.alert(
+      title,
+      message,
+      [
+        { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+        { text: confirmLabel, onPress: () => resolve(true) },
+      ],
+      { cancelable: true, onDismiss: () => resolve(false) }
+    );
+  });
+}
+
+/**
+ * One settings field, with its length shown in BYTES.
+ *
+ * Bytes rather than characters because that is what the board counts: a
+ * 26-character CJK name is 78 bytes and would be rejected at 0x31 after a
+ * connect, a bond and a write. Showing the real number makes that visible while
+ * it can still be fixed.
+ */
+function Field(props: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+  limit: number;
+  editable: boolean;
+  secure?: boolean;
+  note?: string;
+}): React.ReactElement {
+  const used = utf8Length(props.value);
+  const over = used > props.limit;
+  return (
+    <View style={s.field}>
+      <View style={s.fieldTop}>
+        <Text style={s.label}>{props.label}</Text>
+        <Text style={[s.count, over && s.countOver]}>
+          {used}/{props.limit} bytes
+        </Text>
+      </View>
+      <TextInput
+        style={[s.input, over && s.inputOver]}
+        value={props.value}
+        onChangeText={props.onChange}
+        placeholder={props.placeholder}
+        placeholderTextColor={C.dim}
+        editable={props.editable}
+        autoCapitalize="none"
+        autoCorrect={false}
+        secureTextEntry={props.secure}
+      />
+      {props.note ? <Text style={s.fieldNote}>{props.note}</Text> : null}
+    </View>
+  );
+}
+
 export default function App() {
   const [btState, setBtState] = useState<string>('unknown');
   const [scanning, setScanning] = useState(false);
@@ -61,6 +170,9 @@ export default function App() {
   const [selected, setSelected] = useState<string | null>(null);
   const [firmware, setFirmware] = useState<LoadedFirmware | null>(null);
   const [busy, setBusy] = useState(false);
+  // Busy covers a settings write too; this one gates the transfer panel, which
+  // has nothing to show for one.
+  const [uploading, setUploading] = useState(false);
   const [phase, setPhase] = useState<Phase>('idle');
   const [phaseText, setPhaseText] = useState('');
   const [progress, setProgress] = useState<Progress | null>(null);
@@ -70,6 +182,14 @@ export default function App() {
   >(null);
   const [log, setLog] = useState<LogLine[]>([]);
   const [armed, setArmed] = useState(false);
+
+  // Settings. Held in component state only - nothing is written to the phone,
+  // least of all the Wi-Fi password.
+  const [cfgName, setCfgName] = useState('');
+  const [cfgSsid, setCfgSsid] = useState('');
+  const [cfgPass, setCfgPass] = useState('');
+  const [stored, setStored] = useState<StoredConfig | null>(null);
+  const [sendCfg, setSendCfg] = useState(false);
 
   const stopScanRef = useRef<null | (() => void)>(null);
   const sessionRef = useRef<OtaSession | null>(null);
@@ -133,7 +253,10 @@ export default function App() {
         addLog(message, 'error');
         setResult({ ok: false, message, hint });
         setScanning(false);
-      }
+      },
+      // A board renamed from this screen no longer answers to the default, so
+      // the name in the field is what the scan marks as an OTA board.
+      cfgName.trim() || undefined
     );
 
     // BLE scanning is expensive; ten seconds is plenty to find a board on a
@@ -144,7 +267,7 @@ export default function App() {
       setScanning(false);
       addLog('scan finished');
     }, 10_000);
-  }, [addLog]);
+  }, [addLog, cfgName]);
 
   const choose = useCallback(async () => {
     try {
@@ -162,6 +285,137 @@ export default function App() {
     }
   }, [addLog]);
 
+  // What the three fields add up to on the wire. Blank means "leave it alone",
+  // so an empty form is null and nothing is sent at all.
+  const cfgPending = useMemo(
+    () => pendingConfig({ name: cfgName, ssid: cfgSsid, pass: cfgPass }),
+    [cfgName, cfgSsid, cfgPass]
+  );
+
+  const readSettings = useCallback(async () => {
+    if (!selected) return;
+    stopScanRef.current?.();
+    stopScanRef.current = null;
+    setScanning(false);
+    setBusy(true);
+    setResult(null);
+    try {
+      addLog('reading the board settings…');
+      const outcome = await withConfigSession(selected, addLog, setStored, (c) =>
+        c.read()
+      );
+      if (!outcome.ok) {
+        setResult({
+          ok: false,
+          message: outcome.error ?? 'Could not read the settings.',
+          hint: outcome.hint,
+        });
+      }
+    } catch (e) {
+      const { message, hint } = describeBleError(e);
+      addLog(message, 'error');
+      setResult({ ok: false, message, hint });
+    } finally {
+      setBusy(false);
+    }
+  }, [addLog, selected]);
+
+  /**
+   * Change a running board's settings with no cable.
+   *
+   * The same three values a USB provision writes, but into NVS over the
+   * settings characteristic. Nothing else on the flash is touched: both app
+   * slots, otadata and - the part that matters day to day - the board's
+   * Bluetooth bonds all survive, so the phone does not have to pair again.
+   */
+  const writeSettings = useCallback(async () => {
+    if (!selected) {
+      setResult({
+        ok: false,
+        message: 'No board selected.',
+        hint:
+          'Press Scan and pick the board first. This goes over the air, so ' +
+          'the board has to be running the OTA firmware already - a blank ' +
+          'chip is provisioned over USB with the desktop app.',
+      });
+      return;
+    }
+    if (!cfgPending) {
+      setResult({
+        ok: false,
+        message: 'Nothing to send.',
+        hint:
+          'Enter a Bluetooth name, a Wi-Fi network, or both. Fields left ' +
+          'blank are not sent at all, so the board keeps what it has.',
+      });
+      return;
+    }
+    const problem = configProblem(cfgPending);
+    if (problem) {
+      setResult({ ok: false, message: 'That does not fit.', hint: problem });
+      return;
+    }
+
+    const go = await confirm(
+      'Change settings over BLE',
+      `${describeConfig(cfgPending)}\n\n` +
+        (stored ? `It currently reports: ${summarizeStored(stored)}\n\n` : '') +
+        'Only these keys change - the firmware in both slots, the boot ' +
+        'selection and the Bluetooth pairing are left alone. The board ' +
+        'restarts to apply them, which takes a few seconds.' +
+        (cfgPending.ssid
+          ? ' If the network is wrong it falls back to Bluetooth, so it stays ' +
+            'reachable.'
+          : ''),
+      'Write settings'
+    );
+    if (!go) {
+      addLog('settings write cancelled - nothing was sent', 'warn');
+      return;
+    }
+
+    stopScanRef.current?.();
+    stopScanRef.current = null;
+    setScanning(false);
+    setBusy(true);
+    setResult(null);
+    try {
+      addLog('connecting…');
+      const outcome = await withConfigSession(selected, addLog, setStored, (c) =>
+        c.apply(cfgPending, true)
+      );
+      if (outcome.ok) {
+        // The fields stay as they were typed. Clearing the password while the
+        // SSID remained filled would make a second press send that network with
+        // *no* password - which erases the stored one and opens the network.
+        // Whatever was read a moment ago describes a board that is restarting
+        // into different values, so that much is no longer true.
+        setStored(null);
+        setResult({
+          ok: true,
+          message: 'Settings written. The board is restarting to apply them.',
+          hint:
+            'Give it a few seconds, then press Scan' +
+            (cfgPending.name ? ` - it will advertise as "${cfgPending.name}"` : '') +
+            (cfgPending.ssid ? `, joining "${cfgPending.ssid}"` : '') +
+            '.',
+        });
+      } else {
+        setResult({
+          ok: false,
+          message: outcome.error ?? 'The settings were not stored.',
+          hint: outcome.hint,
+        });
+      }
+    } catch (e) {
+      const { message, hint } = describeBleError(e);
+      addLog(message, 'error');
+      setResult({ ok: false, message, hint });
+    } finally {
+      setBusy(false);
+    }
+  }, [addLog, cfgPending, selected, stored]);
+
   const upload = useCallback(async () => {
     if (!selected || !firmware) return;
 
@@ -178,6 +432,7 @@ export default function App() {
     stopScanRef.current = null;
     setScanning(false);
     setBusy(true);
+    setUploading(true);
     setResult(null);
     setProgress(null);
     setCommitted(0);
@@ -188,17 +443,59 @@ export default function App() {
       addLog('connecting…');
       setPhaseText('connecting');
 
-      // The session is constructed before the link so that notifications which
-      // arrive during connect are never dropped on the floor.
-      let session: OtaSession | null = null;
+      // One sink, switched between the two state machines that share this
+      // link, so notifications arriving during connect are never dropped and a
+      // settings acknowledgement never reaches the transfer.
+      let sink: ((bytes: Uint8Array) => void) | null = null;
+      let dropped: (() => void) | null = null;
       link = await BoardLink.connect(
         selected,
-        (bytes) => session?.pushStatus(bytes),
-        () => addLog('board disconnected', 'warn')
+        (bytes) => sink?.(bytes),
+        () => {
+          addLog('board disconnected', 'warn');
+          dropped?.();
+        }
       );
       addLog(`connected - ${link.chunkSize} bytes per write`);
 
-      session = new OtaSession(
+      // Settings first when both were asked for. They live in NVS, which no OTA
+      // touches, and the reboot at the end of this upload is what puts them into
+      // effect - so no second restart is asked for here. If they cannot be
+      // stored we stop instead of flashing: a board that comes back on the old
+      // network under the old name, having reported success, is worse than a
+      // no-op.
+      if (sendCfg && cfgPending) {
+        setPhaseText('storing the settings');
+        const cfgSession = new ConfigSession(link, {
+          onLog: addLog,
+          onStored: setStored,
+        });
+        sink = (bytes) => cfgSession.pushStatus(bytes);
+        dropped = () => cfgSession.noteDisconnected();
+        const cfgOutcome = await cfgSession.apply(cfgPending, false);
+        if (!cfgOutcome.ok) {
+          setResult({
+            ok: false,
+            message:
+              'Settings were not stored, so the firmware was not sent: ' +
+              (cfgOutcome.error ?? 'the board did not accept them'),
+            hint:
+              cfgOutcome.hint ??
+              'Fix the settings, or turn the settings switch off to upload ' +
+                'firmware only.',
+          });
+          return; // the link is closed and the flags reset in `finally`
+        }
+        addLog(
+          'settings stored - they take effect when the board reboots into the ' +
+            'new image'
+        );
+        // What was read a moment ago describes a board that is about to
+        // reboot into different values, so it is no longer true.
+        setStored(null);
+      }
+
+      const session = new OtaSession(
         link,
         firmware.bytes,
         {
@@ -212,6 +509,8 @@ export default function App() {
         },
         { fast: true }
       );
+      sink = (bytes) => session.pushStatus(bytes);
+      dropped = null;
       sessionRef.current = session;
 
       const outcome = await session.run();
@@ -236,15 +535,23 @@ export default function App() {
       sessionRef.current = null;
       await link?.close();
       setBusy(false);
+      setUploading(false);
       setArmed(false);
       setPhase('idle');
       setPhaseText('');
     }
-  }, [addLog, armed, firmware, selected]);
+  }, [addLog, armed, cfgPending, firmware, selected, sendCfg]);
 
   const pct = progress ? Math.round((progress.sent / progress.total) * 100) : 0;
   const canUpload = !!selected && !!firmware && !busy;
   const problems = firmware?.info.problems ?? [];
+  const willSendCfg = sendCfg && !!cfgPending;
+  const uploadLabel = busy
+    ? 'Uploading…'
+    : armed
+    ? 'Upload anyway'
+    : (problems.length > 0 ? 'Upload (has problems)' : 'Upload over BLE') +
+      (willSendCfg ? ' + settings' : '');
 
   return (
     <View style={s.root}>
@@ -293,9 +600,80 @@ export default function App() {
           )}
         </View>
 
+        {/* ---------------------------------------------------- settings */}
+        <View style={s.card}>
+          <Text style={s.h2}>2 · Board settings</Text>
+          <Text style={s.cardNote}>
+            The Bluetooth name and the Wi-Fi credentials live in NVS, not in the
+            firmware image, so they can be changed over the air. Nothing else is
+            touched: both app slots, the boot selection and the pairing all
+            survive. A blank field is not sent at all, so the board keeps what it
+            already has.
+          </Text>
+
+          <Field
+            label="Bluetooth name"
+            value={cfgName}
+            onChange={setCfgName}
+            placeholder={DEFAULT_DEVICE_NAME}
+            limit={CFG_LIMITS.name}
+            editable={!busy}
+          />
+          <Field
+            label="Wi-Fi network"
+            value={cfgSsid}
+            onChange={setCfgSsid}
+            placeholder="SSID"
+            limit={CFG_LIMITS.ssid}
+            editable={!busy}
+          />
+          <Field
+            label="Wi-Fi password"
+            value={cfgPass}
+            onChange={setCfgPass}
+            placeholder="empty = open network"
+            limit={CFG_LIMITS.pass}
+            editable={!busy}
+            secure
+            note="Sent only alongside a network name, so the two always match."
+          />
+
+          {stored && (
+            <Text style={s.storedLine}>
+              Board reports: {summarizeStored(stored)}
+            </Text>
+          )}
+
+          <Pressable
+            style={[s.btn, s.btnGhost, (!selected || busy) && s.btnDisabled]}
+            disabled={!selected || busy}
+            onPress={readSettings}
+          >
+            <Text style={s.btnText}>Read from board</Text>
+          </Pressable>
+          <Pressable
+            style={[
+              s.btn,
+              (!selected || !cfgPending || busy) && s.btnDisabled,
+            ]}
+            disabled={!selected || !cfgPending || busy}
+            onPress={writeSettings}
+          >
+            <Text style={s.btnText}>Change settings over BLE</Text>
+          </Pressable>
+
+          <Text style={s.pairNote}>
+            {!selected
+              ? 'Scan and pick a board first - this goes over the air, so the board has to be running the OTA firmware already.'
+              : !cfgPending
+              ? 'Fill in a name or a network above to enable the write.'
+              : 'The board stores them and restarts to apply them, which takes a few seconds.'}
+          </Text>
+        </View>
+
         {/* ---------------------------------------------------- firmware */}
         <View style={s.card}>
-          <Text style={s.h2}>2 · Firmware</Text>
+          <Text style={s.h2}>3 · Firmware</Text>
           <Pressable style={s.btn} disabled={busy} onPress={choose}>
             <Text style={s.btnText}>
               {firmware ? 'Choose a different .bin' : 'Choose a .bin file'}
@@ -322,7 +700,27 @@ export default function App() {
 
         {/* ------------------------------------------------------ upload */}
         <View style={s.card}>
-          <Text style={s.h2}>3 · Upload</Text>
+          <Text style={s.h2}>4 · Upload</Text>
+
+          {/* The desktop app's "also apply the settings above" checkbox. Both
+              changes then ride one visit, and the upload's own reboot applies
+              them together - a settings write on its own would ask for a second
+              restart for nothing. */}
+          <View style={s.switchRow}>
+            <Switch
+              value={willSendCfg}
+              onValueChange={setSendCfg}
+              disabled={busy || !cfgPending}
+              trackColor={{ false: C.line, true: '#17364a' }}
+              thumbColor={willSendCfg ? C.accent : C.muted}
+            />
+            <Text style={[s.switchLabel, !cfgPending && s.switchLabelOff]}>
+              {cfgPending
+                ? 'Store the settings above first; this upload\'s reboot applies both'
+                : 'Fill in a name or a network above to send settings too'}
+            </Text>
+          </View>
+
           <Pressable
             style={[
               s.btn,
@@ -333,18 +731,10 @@ export default function App() {
             disabled={!canUpload}
             onPress={upload}
           >
-            <Text style={s.btnText}>
-              {busy
-                ? 'Uploading…'
-                : armed
-                ? 'Upload anyway'
-                : problems.length > 0
-                ? 'Upload (has problems)'
-                : 'Upload over BLE'}
-            </Text>
+            <Text style={s.btnText}>{uploadLabel}</Text>
           </Pressable>
 
-          {busy && (
+          {uploading && (
             <Pressable
               style={[s.btn, s.btnGhost]}
               onPress={() => sessionRef.current?.cancel()}
@@ -353,7 +743,7 @@ export default function App() {
             </Pressable>
           )}
 
-          {(busy || progress) && (
+          {(uploading || progress) && (
             <View style={s.progressWrap}>
               <View style={s.progressTop}>
                 <Text style={s.phase}>
@@ -380,7 +770,7 @@ export default function App() {
                   board committed {formatBytes(committed)}
                 </Text>
               )}
-              {busy && phase === 'erasing' && (
+              {uploading && phase === 'erasing' && (
                 <ActivityIndicator color={C.accent} style={{ marginTop: 8 }} />
               )}
             </View>
@@ -470,6 +860,30 @@ const s = StyleSheet.create({
   btnText: { color: C.text, fontWeight: '600', fontSize: 15 },
 
   empty: { color: C.dim, fontSize: 13, textAlign: 'center', paddingVertical: 10 },
+
+  cardNote: { color: C.muted, fontSize: 12, lineHeight: 17 },
+  field: { gap: 5 },
+  fieldTop: { flexDirection: 'row', justifyContent: 'space-between' },
+  label: { color: C.text, fontSize: 13, fontWeight: '600' },
+  count: { color: C.dim, fontSize: 11 },
+  countOver: { color: C.err, fontWeight: '700' },
+  input: {
+    backgroundColor: '#0f131c',
+    borderColor: C.line,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 11,
+    paddingVertical: 10,
+    color: C.text,
+    fontSize: 15,
+  },
+  inputOver: { borderColor: C.err },
+  fieldNote: { color: C.dim, fontSize: 11, lineHeight: 15 },
+  storedLine: { color: C.accent, fontSize: 12, lineHeight: 17 },
+
+  switchRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  switchLabel: { color: C.text, fontSize: 12, lineHeight: 17, flex: 1 },
+  switchLabelOff: { color: C.dim },
 
   row: {
     flexDirection: 'row',

@@ -1,18 +1,19 @@
 # ESP32 OTA — mobile
 
-Send firmware to an ESP32-C3 over Bluetooth from a phone. React Native + Expo,
-so the same codebase covers Android now and iOS when you want it.
+Send firmware to an ESP32-C3 over Bluetooth from a phone, and change the board's
+name and Wi-Fi network while you are there. React Native + Expo, so the same
+codebase covers Android now and iOS when you want it.
 
 Companion to the desktop app in [`../ESP32-Tools`](../ESP32-Tools), which
 provisions a blank board over USB. This app does not provision and does not
 sign — it sends an already-signed image to a board that is already running the
 OTA firmware.
 
-> **Status: not yet run on a device.** The protocol, the image inspector and the
-> transfer state machine are unit-tested (29 tests) and the whole app
-> type-checks against the real library types, but nobody has installed this on a
-> phone or pointed it at a board. See [Building](#building) — this machine has
-> no Android SDK.
+> **Status: not yet run on a device.** The protocol, the image inspector, the
+> transfer state machine and the settings path are unit-tested (57 tests) and
+> the whole app type-checks against the real library types, but nobody has
+> installed this on a phone or pointed it at a board. See
+> [Building](#building) — this machine has no Android SDK.
 
 ## Why React Native, and not a web app
 
@@ -39,7 +40,7 @@ Service `0000ff00-8a3e-4b2c-9d1f-6e5a4c3b2a10`, five characteristics on it:
 | `…ff02` DATA | firmware chunks, written *without* response in fast mode |
 | `…ff03` STAT | notifications: READY, PROGRESS, DONE, ERROR |
 | `…ff04` WIFI | the board's IP, for the desktop app's Wi-Fi transport |
-| `…ff05` CFG | name and Wi-Fi credentials (not used by this app yet) |
+| `…ff05` CFG | name and Wi-Fi credentials — read, and written with a response |
 
 A transfer is: write `START` with the total length, wait for READY, stream the
 image, write `END`, wait for DONE.
@@ -60,18 +61,75 @@ Two decisions worth knowing before you change them:
 - **A missing READY does not abort.** Some builds start accepting data without
   ever sending it, so the transfer streams anyway and lets `END` adjudicate.
 
+## Changing the name and Wi-Fi network
+
+A board that is already running the OTA firmware takes three settings over the
+same link that carries firmware: Bluetooth name, Wi-Fi SSID, Wi-Fi password.
+They live in NVS rather than in the image, which is what lets them change
+without a rebuild — and, here, without a cable. This is the desktop app's
+*Change settings over BLE*, on the phone.
+
+Two ways in, both from the fields in **2 · Board settings**:
+
+* **Change settings over BLE** writes them on their own. The board stores them
+  and restarts to apply.
+* **the switch above Upload** sends them just before a firmware upload, with the
+  restart flag off — the reboot at the end of that upload applies both at once,
+  so a new build can arrive on a new network under a new name in one visit. If
+  the settings cannot be stored the firmware is not sent: a board that comes back
+  on the old network under the old name, having reported success, is worse than a
+  no-op.
+
+A blank field is not sent at all, so the board keeps what it has: to change only
+the Wi-Fi password, fill in the SSID and the new password and leave the name
+empty. An SSID with an empty password means an open network. The password is
+only ever sent alongside an SSID, because the pair has to stay consistent — a new
+SSID next to the old password leaves the board unable to associate, and so no
+longer reachable over the transport you would use to fix it.
+
+Unlike a USB provision this touches nothing but those three keys: both app slots,
+`otadata` and — the part that matters day to day — the board's Bluetooth bonds all
+survive, so the phone does not have to pair again.
+
+**Read from board** shows what it is currently holding. The app reads before
+every write too, which is how a board running firmware too old for this is
+diagnosed *before* anything has been sent to it. The password itself is not
+readable over any transport; the firmware answers with one byte for "a password
+is stored" or "none".
+
+The limits are in **bytes of UTF-8**, not characters — 26, 32 and 63 — so each
+field shows a byte count. A nine-syllable Hangul name is 27 bytes, and counting
+characters would send it only for the board to answer `0x31` after a connect, a
+bond and a write.
+
+Two things this cannot do:
+
+- **Older firmware has no `ff05` at all.** That is reported as exactly that,
+  with the remedy: upload a current image first — an upload this app can do
+  wirelessly, after which settings work from here.
+- **It is BLE only, deliberately.** The characteristic is `WRITE_ENC`, so the
+  link has to be bonded and encrypted first, which is the one gate the board
+  really has. An HTTP endpoint on the LAN would let anything on the network move
+  the board onto another access point.
+
 ## Layout
 
 ```
-src/lib/bytes.ts        base64 + little-endian helpers      (pure)
-src/ota/protocol.ts     UUIDs, opcodes, status decoder,
-                        the device error table              (pure)
-src/ota/image.ts        what an .esp app image says
-                        about itself                        (pure)
-src/ota/session.ts      the transfer state machine          (pure, over an interface)
-src/ota/firmwareFile.ts picking and reading a .bin          (expo-file-system)
-src/ble/transport.ts    react-native-ble-plx adapter        (native)
-App.tsx                 the one screen
+src/lib/bytes.ts         base64, UTF-8, little-endian
+                         helpers                            (pure)
+src/lib/gate.ts          an awaitable flag, and a race
+                         across several of them             (pure)
+src/ota/protocol.ts      UUIDs, opcodes, status decoder,
+                         the device error table             (pure)
+src/ota/image.ts         what an .esp app image says
+                         about itself                       (pure)
+src/ota/config.ts        the settings TLV, and what may
+                         go in it                           (pure)
+src/ota/session.ts       the transfer state machine         (pure, over an interface)
+src/ota/configSession.ts the settings write                 (pure, over an interface)
+src/ota/firmwareFile.ts  picking and reading a .bin         (expo-file-system)
+src/ble/transport.ts     react-native-ble-plx adapter       (native)
+App.tsx                  the one screen
 ```
 
 The split is deliberate. Everything above `firmwareFile.ts` has no React Native
@@ -82,7 +140,7 @@ wire protocol and the flow control — testable in plain node with a fake board.
 ## Testing
 
 ```bash
-npm test        # 29 tests, ~300 ms
+npm test        # 57 tests, ~500 ms
 npm run typecheck
 ```
 
@@ -92,6 +150,14 @@ padding bug, the status decoder including truncated packets, image inspection
 (signed, unsigned, wrong chip, OTA service missing, an `.elf` picked by
 mistake), and the state machine against a fake board that can withhold
 acknowledgements, reject START, error mid-stream, or go quiet.
+
+The settings path is tested the same way, and for the same reason — its failure
+mode is a board on a network that does not exist. UTF-8 is checked against
+Node's own encoder at every length that matters, the payload is checked against
+the byte-for-byte shape in `ota_cfg.h` (including the 129-byte maximum the
+firmware sizes its buffer for), and the write runs against a fake board that
+validates before it stores, refuses while busy, answers with device codes, has
+no settings characteristic at all, or drops the link before acknowledging.
 
 That last group earned its keep. The suite originally took 30 seconds because a
 rejected START sat unread for the full 30-second READY timeout — every wait

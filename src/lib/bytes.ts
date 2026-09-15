@@ -44,6 +44,82 @@ export function fromBase64(s: string): Uint8Array {
   return out.subarray(0, o);
 }
 
+/**
+ * UTF-8, hand-rolled for the same reason base64 is: the board stores and
+ * counts *bytes*, so a Bluetooth name has to be measured in the encoding it
+ * will be stored in - a 26-character CJK name is 78 bytes and does not fit.
+ * TextEncoder is not guaranteed to exist on every engine this app runs on.
+ */
+export function utf8Encode(s: string): Uint8Array {
+  const out: number[] = [];
+  for (let i = 0; i < s.length; i++) {
+    let cp = s.codePointAt(i) as number;
+    if (cp > 0xffff) i++; // a surrogate pair is one code point, two JS units
+    // A lone surrogate is not encodable; WHATWG says substitute U+FFFD.
+    if (cp >= 0xd800 && cp <= 0xdfff) cp = 0xfffd;
+    if (cp < 0x80) {
+      out.push(cp);
+    } else if (cp < 0x800) {
+      out.push(0xc0 | (cp >> 6), 0x80 | (cp & 0x3f));
+    } else if (cp < 0x10000) {
+      out.push(0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+    } else {
+      out.push(
+        0xf0 | (cp >> 18),
+        0x80 | ((cp >> 12) & 0x3f),
+        0x80 | ((cp >> 6) & 0x3f),
+        0x80 | (cp & 0x3f)
+      );
+    }
+  }
+  return new Uint8Array(out);
+}
+
+/** Decodes what the board sends back. Malformed bytes become U+FFFD, never an
+ * exception: a settings read-back is diagnostic, and throwing on one bad byte
+ * would hide the other two fields. */
+export function utf8Decode(b: Uint8Array): string {
+  let s = '';
+  for (let i = 0; i < b.length; ) {
+    const c = b[i++];
+    let cp: number;
+    let need: number;
+    if (c < 0x80) {
+      cp = c;
+      need = 0;
+    } else if (c >= 0xc2 && c < 0xe0) {
+      cp = c & 0x1f;
+      need = 1;
+    } else if (c >= 0xe0 && c < 0xf0) {
+      cp = c & 0x0f;
+      need = 2;
+    } else if (c >= 0xf0 && c < 0xf5) {
+      cp = c & 0x07;
+      need = 3;
+    } else {
+      s += '\ufffd'; // a continuation byte where a leading one belongs
+      continue;
+    }
+    let ok = true;
+    for (let k = 0; k < need; k++) {
+      const cont = b[i];
+      if (cont === undefined || (cont & 0xc0) !== 0x80) {
+        ok = false;
+        break;
+      }
+      cp = (cp << 6) | (cont & 0x3f);
+      i++;
+    }
+    s += ok && cp <= 0x10ffff && !(cp >= 0xd800 && cp <= 0xdfff)
+      ? String.fromCodePoint(cp)
+      : '\ufffd';
+  }
+  return s;
+}
+
+/** Bytes this string costs on the board - what every settings limit counts. */
+export const utf8Length = (s: string): number => utf8Encode(s).length;
+
 /** Little-endian uint32, which is how the firmware sends every length. */
 export function readU32LE(b: Uint8Array, offset: number): number {
   return (

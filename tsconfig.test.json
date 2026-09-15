@@ -14,9 +14,12 @@
   },
   "include": [
     "src/lib/bytes.ts",
+    "src/lib/gate.ts",
     "src/ota/protocol.ts",
     "src/ota/image.ts",
     "src/ota/session.ts",
+    "src/ota/config.ts",
+    "src/ota/configSession.ts",
     "tests/**/*.ts"
   ]
 }

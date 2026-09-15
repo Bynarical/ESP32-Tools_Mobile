@@ -21,7 +21,7 @@
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
-    "test": "tsc -p tsconfig.test.json && node --test .test-build/tests/wire.test.js .test-build/tests/session.test.js",
+    "test": "tsc -p tsconfig.test.json && node --test .test-build/tests/wire.test.js .test-build/tests/session.test.js .test-build/tests/config.test.js",
     "typecheck": "tsc --noEmit"
   },
   "private": true

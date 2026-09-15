@@ -12,6 +12,7 @@
 import { PermissionsAndroid, Platform } from 'react-native';
 import {
   BleError,
+  BleErrorCode,
   BleManager,
   Device,
   State,
@@ -20,6 +21,7 @@ import {
 
 import { fromBase64, toBase64 } from '../lib/bytes';
 import {
+  CFG_UUID,
   CTRL_UUID,
   DATA_UUID,
   DEFAULT_DEVICE_NAME,
@@ -27,6 +29,7 @@ import {
   SVC_UUID,
   chunkForMtu,
 } from '../ota/protocol';
+import { type CfgIo, MissingCharacteristicError } from '../ota/configSession';
 import type { OtaIo } from '../ota/session';
 
 /** Android grants at most 517; iOS negotiates its own and ignores the request. */
@@ -125,8 +128,36 @@ export function scanForBoards(
   };
 }
 
-/** A connected board, ready to run a transfer. */
-export class BoardLink implements OtaIo {
+/**
+ * Codes that all mean "this board does not have that characteristic".
+ *
+ * Discovery has already run by the time anything is read, so a missing ff05 is
+ * not a caching problem - it is firmware older than settings-over-BLE. Either
+ * platform may phrase it as a missing service or a missing characteristic
+ * depending on how much of the profile it cached, and the desktop backend
+ * matches on the text, so both are accepted here.
+ */
+const NOT_FOUND_CODES: number[] = [
+  BleErrorCode.ServiceNotFound,
+  BleErrorCode.ServicesNotDiscovered,
+  BleErrorCode.CharacteristicNotFound,
+  BleErrorCode.CharacteristicsNotDiscovered,
+];
+
+function asCfgError(e: unknown): unknown {
+  const code = (e as Partial<BleError> | null)?.errorCode;
+  const text = (e instanceof Error ? e.message : String(e)).toLowerCase();
+  if ((code !== undefined && NOT_FOUND_CODES.includes(code)) ||
+      text.includes('not found')) {
+    return new MissingCharacteristicError(
+      'the board has no settings characteristic'
+    );
+  }
+  return e;
+}
+
+/** A connected board, ready to run a transfer or take new settings. */
+export class BoardLink implements OtaIo, CfgIo {
   readonly chunkSize: number;
 
   private constructor(
@@ -196,6 +227,40 @@ export class BoardLink implements OtaIo {
         DATA_UUID,
         value
       );
+    }
+  }
+
+  /**
+   * Read the board's stored settings.
+   *
+   * Firmware built before settings-over-BLE existed simply has no ff05, and the
+   * library reports that as CharacteristicNotFound once discovery has run. That
+   * is a capability fact with its own remedy, not a read that failed, so it is
+   * translated here - nothing below this adapter should have to know how
+   * react-native-ble-plx spells it.
+   */
+  async readCfg(): Promise<Uint8Array> {
+    try {
+      const c = await this.device.readCharacteristicForService(
+        SVC_UUID,
+        CFG_UUID
+      );
+      return c.value ? fromBase64(c.value) : new Uint8Array();
+    } catch (e) {
+      throw asCfgError(e);
+    }
+  }
+
+  /** Write settings. With a response: this one has to be acknowledged. */
+  async writeCfg(bytes: Uint8Array): Promise<void> {
+    try {
+      await this.device.writeCharacteristicWithResponseForService(
+        SVC_UUID,
+        CFG_UUID,
+        toBase64(bytes)
+      );
+    } catch (e) {
+      throw asCfgError(e);
     }
   }
 
