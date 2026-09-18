@@ -4,13 +4,18 @@
  *
  * The protocol lives in src/ota/; this file is only presentation and wiring, so
  * that the part which can be wrong in a way you cannot see is the part that is
- * unit-tested.
+ * unit-tested. The wiring follows the desktop app's daemon (ESP32-Tools 1.4.5):
+ * settings first when asked for, deferred when the firmware is too old to take
+ * them, the transfer tried again when the link fails, and a verdict from the
+ * board taken as final.
  */
 import { StatusBar } from 'expo-status-bar';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  AppState,
+  AppStateStatus,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -27,9 +32,11 @@ import {
   describeBleError,
   requestBlePermissions,
   scanForBoards,
+  waitForBoard,
 } from './src/ble/transport';
 import { formatBytes, utf8Length } from './src/lib/bytes';
 import {
+  BoardConfig,
   CFG_LIMITS,
   StoredConfig,
   configProblem,
@@ -37,11 +44,20 @@ import {
   pendingConfig,
   summarizeStored,
 } from './src/ota/config';
-import { ConfigSession } from './src/ota/configSession';
-import { DEFAULT_DEVICE_NAME } from './src/ota/protocol';
+import { CfgOutcome, ConfigSession } from './src/ota/configSession';
+import {
+  DEFAULT_DEVICE_NAME,
+  DEFERRED_CONFIG_POLL_MS,
+  DEFERRED_CONFIG_TIMEOUT_MS,
+  RETRY_DELAY_MS,
+  SETTINGS_ATTEMPTS,
+  UPLOAD_RETRIES,
+  isFatalDeviceCode,
+} from './src/ota/protocol';
 import { LoadedFirmware, pickFirmware } from './src/ota/firmwareFile';
 import { summarize } from './src/ota/image';
-import { OtaSession, Phase, Progress } from './src/ota/session';
+import { describeAttempt, retrying } from './src/ota/retry';
+import { OtaOutcome, OtaSession, Phase, Progress } from './src/ota/session';
 
 const C = {
   bg: '#0d0f14',
@@ -58,14 +74,21 @@ const C = {
 };
 
 type LogLine = { msg: string; level: 'info' | 'warn' | 'error' };
+type AddLog = (msg: string, level?: LogLine['level']) => void;
+
+/** How many lines the log keeps. Enough for a whole upload with retries. */
+const LOG_LINES = 200;
 
 const PHASE_TEXT: Record<Phase, string> = {
   idle: 'Idle',
   erasing: 'Erasing the target slot',
   uploading: 'Uploading',
-  finalizing: 'Verifying the signature',
+  finalizing: 'Verifying the image',
   done: 'Done',
 };
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Connect, run one settings exchange, close.
@@ -77,7 +100,7 @@ const PHASE_TEXT: Record<Phase, string> = {
  */
 async function withConfigSession<T>(
   deviceId: string,
-  addLog: (msg: string, level?: LogLine['level']) => void,
+  addLog: AddLog,
   onStored: (s: StoredConfig) => void,
   fn: (session: ConfigSession) => Promise<T>
 ): Promise<T> {
@@ -94,6 +117,83 @@ async function withConfigSession<T>(
   } finally {
     await link?.close();
   }
+}
+
+/**
+ * A settings write with the desktop backend's patience: three attempts when
+ * the link is what failed, none when the board answered - a verdict is final.
+ */
+function writeSettingsWithRetries(
+  deviceId: string,
+  cfg: BoardConfig,
+  restart: boolean,
+  addLog: AddLog,
+  onStored: (s: StoredConfig) => void
+): Promise<CfgOutcome> {
+  return retrying<CfgOutcome>(
+    () => withConfigSession(deviceId, addLog, onStored, (c) => c.apply(cfg, restart)),
+    {
+      attempts: SETTINGS_ATTEMPTS,
+      delayMs: RETRY_DELAY_MS,
+      // A returned outcome is the board's answer, good or bad; only a thrown
+      // error - the link - is worth another go.
+      retryable: (o) => !o.ok,
+      onRetry: (attempt, o) =>
+        addLog(
+          `attempt ${attempt - 1} of ${SETTINGS_ATTEMPTS} failed: ` +
+            `${describeAttempt(o, (v) => v.error ?? 'no answer')} - trying again`,
+          'warn'
+        ),
+    }
+  );
+}
+
+/**
+ * Store settings on a board that has only just gained the characteristic.
+ *
+ * Runs after an upload that added it. The board is rebooting into the new
+ * image, so this waits for it to advertise again rather than assuming it is
+ * already there, and asks for the restart itself: unlike the settings-first
+ * path there is no later reboot to apply them. Mirrors the desktop backend's
+ * `push_config_when_back()`. Resolves with the last outcome once stored, or
+ * once the deadline has passed.
+ */
+async function storeSettingsWhenBack(
+  deviceId: string,
+  cfg: BoardConfig,
+  addLog: AddLog,
+  onStored: (s: StoredConfig) => void
+): Promise<CfgOutcome> {
+  addLog(
+    'waiting for the board to come back with the new firmware, then storing ' +
+      'the settings'
+  );
+  const deadline = Date.now() + DEFERRED_CONFIG_TIMEOUT_MS;
+  if (!(await waitForBoard(deviceId, DEFERRED_CONFIG_TIMEOUT_MS))) {
+    return {
+      ok: false,
+      error: `the board did not advertise again within ${
+        DEFERRED_CONFIG_TIMEOUT_MS / 1000
+      } s`,
+    };
+  }
+  addLog('board is advertising again');
+  let last: CfgOutcome = { ok: false, error: 'not attempted' };
+  while (Date.now() < deadline) {
+    try {
+      last = await withConfigSession(deviceId, addLog, onStored, (c) =>
+        c.apply(cfg, true)
+      );
+      // The board's own verdict on the payload is final; anything else - no
+      // characteristic yet because the old image is still up, a dropped link,
+      // no acknowledgement - is worth asking again a few seconds later.
+      if (last.ok || last.deviceCode !== undefined) return last;
+    } catch (e) {
+      last = { ok: false, error: describeBleError(e).message };
+    }
+    await sleep(DEFERRED_CONFIG_POLL_MS);
+  }
+  return last;
 }
 
 /**
@@ -163,6 +263,17 @@ function Field(props: {
   );
 }
 
+/** One transfer attempt's outcome, plus the one reason not to try again that
+ * the transfer itself cannot know: the settings before it were refused. */
+type UploadStep = OtaOutcome & { stopped?: boolean };
+
+/** Where the settings that ride along with an upload have got to. */
+type CfgStage = 'pending' | 'stored' | 'deferred' | 'none';
+
+/** Whether a failed attempt is the link's fault rather than a verdict. */
+const worthAnotherGo = (o: UploadStep): boolean =>
+  !o.ok && !o.cancelled && !o.stopped && !isFatalDeviceCode(o.deviceCode);
+
 export default function App() {
   const [btState, setBtState] = useState<string>('unknown');
   const [scanning, setScanning] = useState(false);
@@ -180,6 +291,9 @@ export default function App() {
   const [result, setResult] = useState<
     { ok: boolean; message: string; hint?: string } | null
   >(null);
+  // The log is for one opening of the app. It is held in memory only - never
+  // written to the phone - and it starts afresh when the app is brought back
+  // from the background, so what is on screen is always about this visit.
   const [log, setLog] = useState<LogLine[]>([]);
   const [armed, setArmed] = useState(false);
 
@@ -193,16 +307,32 @@ export default function App() {
 
   const stopScanRef = useRef<null | (() => void)>(null);
   const sessionRef = useRef<OtaSession | null>(null);
+  const busyRef = useRef(false);
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
 
   const addLog = useCallback((msg: string, level: LogLine['level'] = 'info') => {
-    setLog((prev) => [...prev.slice(-200), { msg, level }]);
+    setLog((prev) => [...prev.slice(-(LOG_LINES - 1)), { msg, level }]);
   }, []);
+
+  useEffect(() => {
+    busyRef.current = busy;
+  }, [busy]);
 
   useEffect(() => {
     bluetoothState()
       .then((s) => setBtState(String(s)))
       .catch(() => setBtState('unavailable'));
+    // Coming back to the app is a new session for the log - unless something
+    // is still running, whose lines are exactly what a person came back for.
+    const sub = AppState.addEventListener('change', (next) => {
+      const prev = appStateRef.current;
+      appStateRef.current = next;
+      if (prev === 'background' && next === 'active' && !busyRef.current) {
+        setLog([]);
+      }
+    });
     return () => {
+      sub.remove();
       stopScanRef.current?.();
     };
   }, []);
@@ -292,11 +422,15 @@ export default function App() {
     [cfgName, cfgSsid, cfgPass]
   );
 
-  const readSettings = useCallback(async () => {
-    if (!selected) return;
+  const stopScanning = useCallback(() => {
     stopScanRef.current?.();
     stopScanRef.current = null;
     setScanning(false);
+  }, []);
+
+  const readSettings = useCallback(async () => {
+    if (!selected) return;
+    stopScanning();
     setBusy(true);
     setResult(null);
     try {
@@ -318,7 +452,7 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [addLog, selected]);
+  }, [addLog, selected, stopScanning]);
 
   /**
    * Change a running board's settings with no cable.
@@ -374,15 +508,17 @@ export default function App() {
       return;
     }
 
-    stopScanRef.current?.();
-    stopScanRef.current = null;
-    setScanning(false);
+    stopScanning();
     setBusy(true);
     setResult(null);
     try {
       addLog('connecting…');
-      const outcome = await withConfigSession(selected, addLog, setStored, (c) =>
-        c.apply(cfgPending, true)
+      const outcome = await writeSettingsWithRetries(
+        selected,
+        cfgPending,
+        true,
+        addLog,
+        setStored
       );
       if (outcome.ok) {
         // The fields stay as they were typed. Clearing the password while the
@@ -414,7 +550,7 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [addLog, cfgPending, selected, stored]);
+  }, [addLog, cfgPending, selected, stopScanning, stored]);
 
   const upload = useCallback(async () => {
     if (!selected || !firmware) return;
@@ -428,9 +564,7 @@ export default function App() {
       return;
     }
 
-    stopScanRef.current?.();
-    stopScanRef.current = null;
-    setScanning(false);
+    stopScanning();
     setBusy(true);
     setUploading(true);
     setResult(null);
@@ -438,8 +572,23 @@ export default function App() {
     setCommitted(0);
     setPhase('idle');
 
-    let link: BoardLink | null = null;
-    try {
+    // Settings ride along when asked for. They live in NVS, which no OTA
+    // touches, and the reboot at the end of the upload is what puts them into
+    // effect - so no second restart is asked for. They are stored once, on the
+    // first attempt that gets that far; a retry of the transfer does not store
+    // them again. A board too old to have the characteristic is not a reason
+    // to stop: the image about to be sent is what adds it, so the settings go
+    // in after the upload instead.
+    const cfgStage: { state: CfgStage } = {
+      state: sendCfg && cfgPending ? 'pending' : 'none',
+    };
+
+    const attemptOnce = async (attempt: number): Promise<UploadStep> => {
+      if (attempt > 1) {
+        setProgress(null);
+        setCommitted(0);
+        setPhase('idle');
+      }
       addLog('connecting…');
       setPhaseText('connecting');
 
@@ -448,7 +597,7 @@ export default function App() {
       // settings acknowledgement never reaches the transfer.
       let sink: ((bytes: Uint8Array) => void) | null = null;
       let dropped: (() => void) | null = null;
-      link = await BoardLink.connect(
+      const link = await BoardLink.connect(
         selected,
         (bytes) => sink?.(bytes),
         () => {
@@ -456,91 +605,155 @@ export default function App() {
           dropped?.();
         }
       );
-      addLog(`connected - ${link.chunkSize} bytes per write`);
+      try {
+        addLog(`connected - ${link.chunkSize} bytes per write`);
 
-      // Settings first when both were asked for. They live in NVS, which no OTA
-      // touches, and the reboot at the end of this upload is what puts them into
-      // effect - so no second restart is asked for here. If they cannot be
-      // stored we stop instead of flashing: a board that comes back on the old
-      // network under the old name, having reported success, is worse than a
-      // no-op.
-      if (sendCfg && cfgPending) {
-        setPhaseText('storing the settings');
-        const cfgSession = new ConfigSession(link, {
-          onLog: addLog,
-          onStored: setStored,
-        });
-        sink = (bytes) => cfgSession.pushStatus(bytes);
-        dropped = () => cfgSession.noteDisconnected();
-        const cfgOutcome = await cfgSession.apply(cfgPending, false);
-        if (!cfgOutcome.ok) {
-          setResult({
-            ok: false,
-            message:
-              'Settings were not stored, so the firmware was not sent: ' +
-              (cfgOutcome.error ?? 'the board did not accept them'),
-            hint:
-              cfgOutcome.hint ??
-              'Fix the settings, or turn the settings switch off to upload ' +
-                'firmware only.',
+        if (cfgStage.state === 'pending' && cfgPending) {
+          setPhaseText('storing the settings');
+          const cfgSession = new ConfigSession(link, {
+            onLog: addLog,
+            onStored: setStored,
           });
-          return; // the link is closed and the flags reset in `finally`
+          sink = (bytes) => cfgSession.pushStatus(bytes);
+          dropped = () => cfgSession.noteDisconnected();
+          const cfgOutcome = await cfgSession.apply(cfgPending, false);
+          if (cfgOutcome.ok) {
+            cfgStage.state = 'stored';
+            addLog(
+              'settings stored - they take effect when the board reboots into ' +
+                'the new image'
+            );
+            // What was read a moment ago describes a board that is about to
+            // reboot into different values, so it is no longer true.
+            setStored(null);
+          } else if (cfgOutcome.unsupported) {
+            cfgStage.state = 'deferred';
+            addLog(
+              'this board has no settings characteristic yet - the upload adds ' +
+                'it, so the settings go in once the new firmware is running',
+              'warn'
+            );
+          } else {
+            // If they cannot be stored we stop instead of flashing: a board
+            // that comes back on the old network under the old name, having
+            // reported success, is worse than a no-op.
+            return {
+              ok: false,
+              stopped: true,
+              error:
+                'Settings were not stored, so the firmware was not sent: ' +
+                (cfgOutcome.error ?? 'the board did not accept them'),
+              hint:
+                cfgOutcome.hint ??
+                'Fix the settings, or turn the settings switch off to upload ' +
+                  'firmware only.',
+            };
+          }
         }
-        addLog(
-          'settings stored - they take effect when the board reboots into the ' +
-            'new image'
-        );
-        // What was read a moment ago describes a board that is about to
-        // reboot into different values, so it is no longer true.
-        setStored(null);
-      }
 
-      const session = new OtaSession(
-        link,
-        firmware.bytes,
-        {
-          onPhase: (p, text) => {
-            setPhase(p);
-            setPhaseText(text ?? '');
+        const session = new OtaSession(
+          link,
+          firmware.bytes,
+          {
+            onPhase: (p, text) => {
+              setPhase(p);
+              setPhaseText(text ?? '');
+            },
+            onProgress: setProgress,
+            onDeviceProgress: setCommitted,
+            onLog: addLog,
           },
-          onProgress: setProgress,
-          onDeviceProgress: setCommitted,
-          onLog: addLog,
-        },
-        { fast: true }
-      );
-      sink = (bytes) => session.pushStatus(bytes);
-      dropped = null;
-      sessionRef.current = session;
+          { fast: true }
+        );
+        sink = (bytes) => session.pushStatus(bytes);
+        dropped = null;
+        sessionRef.current = session;
+        return await session.run();
+      } finally {
+        sessionRef.current = null;
+        await link.close();
+      }
+    };
 
-      const outcome = await session.run();
-      if (outcome.ok) {
-        setResult({
-          ok: true,
-          message: 'Upload accepted. The board is rebooting into the new image.',
-          hint: outcome.hint,
-        });
-      } else {
+    try {
+      // The desktop backend's policy: a link failure gets two more tries, two
+      // seconds apart - the board keeps its current firmware until END is
+      // accepted, so starting over is safe. A verdict about the image, or a
+      // cancel, is final.
+      const outcome = await retrying<UploadStep>(attemptOnce, {
+        attempts: 1 + UPLOAD_RETRIES,
+        delayMs: RETRY_DELAY_MS,
+        retryable: (o) => (o.ok ? worthAnotherGo(o.value) : true),
+        onRetry: (attempt, o) => {
+          addLog(
+            `attempt ${attempt - 1} failed: ` +
+              describeAttempt(o, (v) => v.error ?? 'the board did not finish'),
+            'error'
+          );
+          addLog(`retry ${attempt - 1} of ${UPLOAD_RETRIES}`, 'warn');
+        },
+      });
+
+      if (!outcome.ok) {
         setResult({
           ok: false,
           message: outcome.error ?? 'Upload failed.',
           hint: outcome.hint,
         });
+        return;
       }
+
+      if (cfgStage.state === 'deferred' && cfgPending) {
+        setPhase('done');
+        setPhaseText('waiting for the board to come back');
+        const deferred = await storeSettingsWhenBack(
+          selected,
+          cfgPending,
+          addLog,
+          setStored
+        );
+        if (!deferred.ok) {
+          setResult({
+            ok: false,
+            message:
+              'The firmware was uploaded, but the settings could not be stored ' +
+              `afterwards: ${deferred.error ?? 'the board did not come back'}`,
+            hint:
+              'The new firmware is on the board - do not send it again. Once ' +
+              'the board is advertising, set the name and Wi-Fi on their own.',
+          });
+          return;
+        }
+        setStored(null);
+        setResult({
+          ok: true,
+          message:
+            'Upload accepted, and the settings were stored on the new firmware.',
+          hint:
+            'The board is restarting once more to apply them.' +
+            (outcome.hint ? ` ${outcome.hint}` : ''),
+        });
+        return;
+      }
+
+      setResult({
+        ok: true,
+        message: 'Upload accepted. The board is rebooting into the new image.',
+        hint: outcome.hint,
+      });
     } catch (e) {
       const { message, hint } = describeBleError(e);
       addLog(message, 'error');
       setResult({ ok: false, message, hint });
     } finally {
       sessionRef.current = null;
-      await link?.close();
       setBusy(false);
       setUploading(false);
       setArmed(false);
       setPhase('idle');
       setPhaseText('');
     }
-  }, [addLog, armed, cfgPending, firmware, selected, sendCfg]);
+  }, [addLog, armed, cfgPending, firmware, selected, sendCfg, stopScanning]);
 
   const pct = progress ? Math.round((progress.sent / progress.total) * 100) : 0;
   const canUpload = !!selected && !!firmware && !busy;
@@ -790,13 +1003,27 @@ export default function App() {
 
           <Text style={s.pairNote}>
             The board only accepts firmware over an encrypted link, so Android
-            shows a pairing prompt the first time — accept it.
+            shows a pairing prompt the first time — accept it. A dropped link is
+            retried on its own; the board keeps its current firmware until the
+            new one has fully arrived.
           </Text>
         </View>
 
         {/* --------------------------------------------------------- log */}
         <View style={s.card}>
-          <Text style={s.h2}>Log</Text>
+          <View style={s.logHead}>
+            <Text style={s.h2}>Log</Text>
+            <Pressable
+              style={[s.btnSmall, log.length === 0 && s.btnDisabled]}
+              disabled={log.length === 0}
+              onPress={() => setLog([])}
+            >
+              <Text style={s.btnSmallText}>Clear</Text>
+            </Pressable>
+          </View>
+          <Text style={s.logNote}>
+            This session only - nothing is saved on the phone.
+          </Text>
           {log.length === 0 ? (
             <Text style={s.empty}>Nothing yet.</Text>
           ) : (
@@ -858,6 +1085,14 @@ const s = StyleSheet.create({
   btnDanger: { backgroundColor: '#3a1d22', borderColor: C.err },
   btnDisabled: { opacity: 0.45 },
   btnText: { color: C.text, fontWeight: '600', fontSize: 15 },
+  btnSmall: {
+    borderColor: C.line,
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+  },
+  btnSmallText: { color: C.muted, fontSize: 12, fontWeight: '600' },
 
   empty: { color: C.dim, fontSize: 13, textAlign: 'center', paddingVertical: 10 },
 
@@ -932,5 +1167,7 @@ const s = StyleSheet.create({
   resultHint: { color: C.muted, fontSize: 12, lineHeight: 17 },
 
   pairNote: { color: C.dim, fontSize: 11, lineHeight: 16 },
+  logHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  logNote: { color: C.dim, fontSize: 11 },
   logLine: { color: '#b9c1d4', fontSize: 11, lineHeight: 16 },
 });

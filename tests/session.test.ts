@@ -312,3 +312,26 @@ test('a rejected START is reported promptly, not after the READY timeout', async
     `took ${elapsed}ms - it waited out the READY timeout again`
   );
 });
+
+test('a device error carries the board\u2019s own code, so a retry policy can read it', async () => {
+  const board = new FakeBoard();
+  board.errorAtBytes = 1024;
+  board.errorCode = 0x11;
+  const { promise } = run(board, firmware(4096));
+  const outcome = await promise;
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.deviceCode, 0x11);
+  assert.match(outcome.error ?? '', /0x11/);
+
+  const rejected = new FakeBoard();
+  rejected.rejectStart = true;
+  const start = await run(rejected, firmware(2048)).promise;
+  assert.equal(start.deviceCode, 0x02);
+
+  const stalled = new FakeBoard();
+  stalled.autoCommit = false;
+  // No board verdict: the link is what failed, and the code stays absent.
+  const quiet = await run(stalled, firmware(65536)).promise;
+  assert.equal(quiet.ok, false);
+  assert.equal(quiet.deviceCode, undefined);
+});

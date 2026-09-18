@@ -2,10 +2,10 @@
  * Read what an ESP-IDF application image says about itself, before uploading it.
  *
  * Worth doing on a phone even more than on a desktop: a BLE upload takes the
- * better part of a minute, and the three ways it predictably ends in failure -
- * unsigned image, wrong chip, OTA service missing - are all visible in the
- * first 300 bytes of the file. Ported from the desktop app's `inspect_image()`
- * and `readAppDesc()`.
+ * better part of a minute, and the ways it predictably ends in failure - wrong
+ * chip, OTA service missing, a board that still verifies signatures - are all
+ * visible in the first 300 bytes of the file. Ported from the desktop app's
+ * `inspect_image()` in ESP32-Tools' `appimage.py`, and kept in step with it.
  */
 import { readCString, readU16LE, readU32LE } from '../lib/bytes';
 
@@ -40,6 +40,13 @@ const OTA_SVC_BYTES = [
   0xff, 0x00, 0x00,
 ];
 
+/**
+ * The NVS key the Wi-Fi OTA transport reads its network from. Present only in
+ * firmware that carries the Wi-Fi half of the service; the desktop app uses the
+ * same marker to label an image "BLE + Wi-Fi".
+ */
+const WIFI_OTA_MARKER = [...'wifi_ssid'].map((c) => c.charCodeAt(0));
+
 export interface ImageInfo {
   sizeBytes: number;
   /** A parseable ESP application image. */
@@ -52,7 +59,10 @@ export interface ImageInfo {
   buildTime: string | null;
   idfVersion: string | null;
   signed: boolean;
+  /** Carries the BLE OTA service, so the board stays updatable over the air. */
   keepsOta: boolean;
+  /** Also carries the Wi-Fi OTA transport. */
+  keepsWifiOta: boolean;
   /** Reasons not to upload this at all. */
   problems: string[];
   /** Reasons to think twice. */
@@ -71,7 +81,11 @@ function findBytes(haystack: Uint8Array, needle: number[]): boolean {
   return false;
 }
 
-export function inspectImage(bytes: Uint8Array): ImageInfo {
+/**
+ * Inspect an image. `name` is the file's name when known: one of the checks is
+ * about how a build names its output, not about the bytes.
+ */
+export function inspectImage(bytes: Uint8Array, name?: string): ImageInfo {
   const info: ImageInfo = {
     sizeBytes: bytes.length,
     valid: false,
@@ -84,6 +98,7 @@ export function inspectImage(bytes: Uint8Array): ImageInfo {
     idfVersion: null,
     signed: false,
     keepsOta: false,
+    keepsWifiOta: false,
     problems: [],
     warnings: [],
   };
@@ -112,6 +127,8 @@ export function inspectImage(bytes: Uint8Array): ImageInfo {
     info.buildTime = readCString(bytes, 0x70, 16) || null;
     info.buildDate = readCString(bytes, 0x80, 16) || null;
     info.idfVersion = readCString(bytes, 0x90, 32) || null;
+  } else {
+    info.warnings.push('No esp_app_desc_t found; version info unavailable.');
   }
 
   // Secure Boot v2 puts its signature in the image's own final 4 KB sector.
@@ -120,12 +137,27 @@ export function inspectImage(bytes: Uint8Array): ImageInfo {
     bytes[bytes.length - SIG_BLOCK_SIZE] === SIG_BLOCK_MAGIC;
 
   info.keepsOta = findBytes(bytes, OTA_SVC_BYTES);
+  info.keepsWifiOta = findBytes(bytes, WIFI_OTA_MARKER);
 
   if (!info.signed) {
-    info.problems.push(
-      'This image is not signed, so the board will reject it with error 0x11 ' +
-        'after the whole upload. Send the signed image, not *-unsigned.bin.'
+    // Unsigned is the expected shape of an image now: the desktop toolchain
+    // leaves signature verification off, so a board flashed from it takes any
+    // build it is sent. It is only worth a word for a board that predates that
+    // - it still verifies the next update - so this is a warning about one
+    // situation, not a problem with the file in hand.
+    info.warnings.push(
+      'Unsigned image - expected, since signature verification is off. A ' +
+        'board last flashed while verification was still on rejects it with ' +
+        'error 0x11; flash that board over USB once with the desktop app and ' +
+        'it takes unsigned updates afterwards.'
     );
+    if (name && name.endsWith('-unsigned.bin')) {
+      info.warnings.push(
+        "Filename says '-unsigned', which only a signed build produces. If " +
+          'this project does sign, the signed image sits beside it under the ' +
+          'same name without the suffix.'
+      );
+    }
   }
   if (info.chipId !== EXPECTED_CHIP_ID) {
     info.problems.push(
@@ -137,7 +169,8 @@ export function inspectImage(bytes: Uint8Array): ImageInfo {
     info.warnings.push(
       'The OTA service was not found in this image. It will run, but the board ' +
         'will only be updatable with a USB cable afterwards - this is a one-way ' +
-        'upload.'
+        'upload. Rollback may rescue you: unless the image marks itself valid, ' +
+        'the bootloader reverts on the next reset.'
     );
   }
 
@@ -152,6 +185,13 @@ export function summarize(info: ImageInfo): string {
   if (info.version) bits.push(`v${info.version}`);
   bits.push(`${(info.sizeBytes / 1024).toFixed(1)} KB`);
   if (info.chip) bits.push(info.chip);
-  bits.push(info.signed ? 'signed' : 'UNSIGNED');
+  bits.push(
+    info.keepsOta
+      ? info.keepsWifiOta
+        ? 'keeps OTA (BLE + Wi-Fi)'
+        : 'keeps OTA (BLE)'
+      : 'no OTA'
+  );
+  bits.push(info.signed ? 'signed' : 'unsigned');
   return bits.join('  ·  ');
 }

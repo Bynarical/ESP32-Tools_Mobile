@@ -44,10 +44,13 @@ export async function pickFirmware(): Promise<LoadedFirmware | null> {
 
   const file = picked.result;
   const bytes = await file.bytes();
+  const name = basename(file.uri);
   return {
-    name: basename(file.uri),
+    name,
     uri: file.uri,
     bytes,
-    info: inspectImage(bytes),
+    // The name goes along: one of the checks is about how a build names its
+    // output ('-unsigned.bin'), which the bytes alone cannot say.
+    info: inspectImage(bytes, name),
   };
 }

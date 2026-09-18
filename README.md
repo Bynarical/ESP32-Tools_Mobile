@@ -10,10 +10,17 @@ sign — it sends an already-signed image to a board that is already running the
 OTA firmware.
 
 > **Status: not yet run on a device.** The protocol, the image inspector, the
-> transfer state machine and the settings path are unit-tested (57 tests) and
-> the whole app type-checks against the real library types, but nobody has
-> installed this on a phone or pointed it at a board. See
+> transfer state machine, the settings path and the retry policy are
+> unit-tested (67 tests) and the whole app type-checks against the real library
+> types, but nobody has installed this on a phone or pointed it at a board. See
 > [Building](#building) — this machine has no Android SDK.
+
+**In step with ESP32 Tools 1.4.5.** The wire protocol, the error table and the
+decisions around it are transcribed from the desktop app's backend and updated
+with it: signature verification is off by default there, so an unsigned image
+is the normal case here too; a link that fails is tried again, twice, as the
+daemon does; settings ride ahead of an upload and are deferred when the board's
+firmware is too old to take them; and the log is for one opening of the app.
 
 ## Why React Native, and not a web app
 
@@ -60,6 +67,13 @@ Two decisions worth knowing before you change them:
   there would be a lie.
 - **A missing READY does not abort.** Some builds start accepting data without
   ever sending it, so the transfer streams anyway and lets `END` adjudicate.
+- **A link failure is retried, a verdict is not.** The desktop daemon gives an
+  upload two more tries, two seconds apart, when the connection is what failed
+  — a drop, a stall, a connect that never came up — because the board keeps its
+  current firmware until `END` is accepted, so starting over is safe. The same
+  policy runs here (`src/ota/retry.ts`). Codes `0x02`, `0x03` and `0x11` are
+  about the image and come back identical every time, so they end the attempt
+  at once; so does a cancel.
 
 ## Changing the name and Wi-Fi network
 
@@ -76,9 +90,16 @@ Two ways in, both from the fields in **2 · Board settings**:
 * **the switch above Upload** sends them just before a firmware upload, with the
   restart flag off — the reboot at the end of that upload applies both at once,
   so a new build can arrive on a new network under a new name in one visit. If
-  the settings cannot be stored the firmware is not sent: a board that comes back
-  on the old network under the old name, having reported success, is worse than a
-  no-op.
+  the board refuses the settings the firmware is not sent: a board that comes
+  back on the old network under the old name, having reported success, is worse
+  than a no-op. One refusal is different: a board whose firmware has no
+  settings characteristic at all cannot take them *yet*, and the image about to
+  be sent is what adds it — so the upload goes ahead, the app waits for the
+  board to advertise again, and stores the settings on the new firmware with a
+  restart of their own. This is the desktop daemon's behaviour, step for step.
+
+A settings write on its own gets three attempts when the link is what failed,
+as the daemon's does; a verdict from the board — a device code — is final.
 
 A blank field is not sent at all, so the board keeps what it has: to change only
 the Wi-Fi password, fill in the SSID and the new password and leave the name
@@ -140,7 +161,7 @@ wire protocol and the flow control — testable in plain node with a fake board.
 ## Testing
 
 ```bash
-npm test        # 57 tests, ~500 ms
+npm test        # 67 tests, ~500 ms
 npm run typecheck
 ```
 
@@ -229,17 +250,26 @@ like a Bluetooth bug.
 - `expo-dev-client` pulls `SYSTEM_ALERT_WINDOW` and `VIBRATE` into the manifest.
   Drop the dependency for a store build if you would rather not declare them.
 
-## The signing key still rules everything
+## Signatures, and why 0x11 can still happen
 
-This app only *sends* images. The board checks every one against the RSA-3072 key
-baked into the firmware it is currently running, so an image signed with a
-different key is rejected with `0x11` after the whole upload has transferred.
+The desktop toolchain builds with signature verification **off**: these are
+internal boards with no eFuses burned, so the signature never protected anything
+a USB cable could not already reach, while a key that drifts out of step with
+the fleet strands it. A board flashed from that toolchain takes any image it is
+sent, and every image it produces is unsigned. The inspector here therefore
+treats an unsigned image as the expected shape — a warning, not a problem — and
+labels it `unsigned` in the summary; an image that still carries a signature
+block is labelled `signed`. Wrong chip and a missing OTA service remain the
+things that stop an upload or ask for a second tap.
 
-The inspector catches that before you spend the minute: an unsigned image is
-reported as a problem with the reason, and uploading it needs a deliberate second
-tap. What it cannot detect is an image signed with the *wrong* key — only the
-board knows that.
+`0x11` is still possible. A board last flashed while verification was on keeps
+verifying the next update and rejects an unsigned one after the whole transfer.
+The fix is one USB provision with the desktop app, after which it takes
+unsigned updates. Otherwise `0x11` means the image was truncated or corrupt.
 
-A key cannot be rotated over the air. Changing it means a USB provision from the
-desktop app. Keep `ota_signing_key.pem` backed up somewhere that is not one
-laptop.
+## The log
+
+The log is for one opening of the app. It is held in memory only — nothing is
+written to the phone, least of all the Wi-Fi password — and it starts afresh
+when the app is brought back from the background, unless an operation is still
+running, whose lines are what you came back for. **Clear** empties it by hand.

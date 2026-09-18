@@ -22,6 +22,7 @@ import {
 import { fromBase64, toBase64 } from '../lib/bytes';
 import {
   CFG_UUID,
+  CONNECT_TIMEOUT_MS,
   CTRL_UUID,
   DATA_UUID,
   DEFAULT_DEVICE_NAME,
@@ -129,6 +130,40 @@ export function scanForBoards(
 }
 
 /**
+ * Wait for one particular board to advertise again.
+ *
+ * Used after an upload that has to be followed by a settings write: the board
+ * is rebooting into the image that adds the characteristic, and connecting
+ * before it advertises would only burn an attempt on a timeout. The desktop
+ * backend polls with connect attempts; a scan is the same wait without the
+ * bond prompts. Resolves true when seen, false when `timeoutMs` runs out.
+ */
+export function waitForBoard(deviceId: string, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (seen: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        bleManager().stopDeviceScan();
+      } catch {
+        // Already stopped.
+      }
+      resolve(seen);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    bleManager().startDeviceScan(null, { allowDuplicates: true }, (err, device) => {
+      if (err) {
+        finish(false);
+        return;
+      }
+      if (device?.id === deviceId) finish(true);
+    });
+  });
+}
+
+/**
  * Codes that all mean "this board does not have that characteristic".
  *
  * Discovery has already run by the time anything is read, so a missing ff05 is
@@ -175,8 +210,13 @@ export class BoardLink implements OtaIo, CfgIo {
   ): Promise<BoardLink> {
     const mgr = bleManager();
     // requestMTU is honoured on Android and ignored on iOS, which negotiates on
-    // its own; either way chunkForMtu() clamps to what the link reports.
-    const device = await mgr.connectToDevice(deviceId, { requestMTU: WANTED_MTU });
+    // its own; either way chunkForMtu() clamps to what the link reports. The
+    // timeout is the desktop backend's: long enough to survive one stalled
+    // service discovery, which the stack retries on its own.
+    const device = await mgr.connectToDevice(deviceId, {
+      requestMTU: WANTED_MTU,
+      timeout: CONNECT_TIMEOUT_MS,
+    });
     await device.discoverAllServicesAndCharacteristics();
 
     let mtu = device.mtu ?? 23;
@@ -302,6 +342,14 @@ export function describeBleError(e: unknown): { message: string; hint?: string }
       hint:
         'Stay within a few metres of the board during an upload and keep the ' +
         'screen on. The board keeps its current firmware, so retrying is safe.',
+    };
+  }
+  if (low.includes('timed out') || low.includes('timeout')) {
+    return {
+      message: 'The board did not answer in time.',
+      hint:
+        'Confirm it is powered and advertising, and move closer. The app ' +
+        'already tried again on its own.',
     };
   }
   if (low.includes('powered off') || low.includes('bluetoothle is powered off')) {

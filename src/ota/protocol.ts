@@ -1,10 +1,11 @@
 /**
  * The ESP32-C3 BLE OTA wire protocol.
  *
- * Ported from the desktop app's `backend/ota_daemon.py`, which is the reference
- * implementation, and from the `notify_error()` call sites in the firmware's
- * `main/ble_ota_main.c`. Both sides must agree byte for byte, so the opcodes and
- * the error table are transcribed rather than reinvented.
+ * Ported from the desktop app's backend (`backend/otad/protocol.py` and
+ * `bleota.py` in ESP32-Tools), which is the reference implementation, and from
+ * the `notify_error()` call sites in the firmware's `main/ble_ota_main.c`. Both
+ * sides must agree byte for byte, so the opcodes and the error table are
+ * transcribed rather than reinvented. Kept in step with ESP32-Tools 1.4.5.
  *
  * Deliberately free of React Native imports: everything here is testable in
  * plain node, which is the only way to check a protocol without a board.
@@ -48,6 +49,44 @@ export const READY_TIMEOUT_MS = 30_000;
 export const DONE_TIMEOUT_MS = 25_000;
 /** How long the device may go without confirming progress before we give up. */
 export const STALL_TIMEOUT_MS = 15_000;
+
+/**
+ * How long a connection may take to come up. The desktop backend measured a
+ * link that stalls once at about 26 s before its stack retries, so 20 s made a
+ * recoverable stall a hard failure; 45 s survives one.
+ */
+export const CONNECT_TIMEOUT_MS = 45_000;
+
+/**
+ * How the desktop backend treats a failed attempt, mirrored here.
+ *
+ * An upload that fails on the link - a drop, a stall, a connect that never
+ * came up - is tried again, twice, two seconds apart; the board keeps its
+ * current firmware until END is accepted, so starting over is safe. A verdict
+ * from the board about the *image* is final: retrying reproduces it exactly.
+ * A settings write gets three attempts for the same reasons.
+ */
+export const UPLOAD_RETRIES = 2;
+export const RETRY_DELAY_MS = 2_000;
+export const SETTINGS_ATTEMPTS = 3;
+
+/**
+ * Device errors that are a property of the image, not of the link.
+ * No spare partition, a slot the image does not fit, a rejected image.
+ */
+export const FATAL_DEVICE_CODES: readonly number[] = [0x02, 0x03, 0x11];
+
+export const isFatalDeviceCode = (code: number | undefined | null): boolean =>
+  code != null && FATAL_DEVICE_CODES.includes(code);
+
+/**
+ * Settings that could not be stored before an upload because the board's
+ * firmware predates the characteristic are stored after it, once the board
+ * has rebooted into the image that adds it. Long enough for a reboot and a
+ * fresh round of advertising; polled every few seconds.
+ */
+export const DEFERRED_CONFIG_TIMEOUT_MS = 120_000;
+export const DEFERRED_CONFIG_POLL_MS = 5_000;
 
 export function encodeStart(totalBytes: number): Uint8Array {
   const out = new Uint8Array(5);
@@ -96,7 +135,8 @@ export function decodeStatus(data: Uint8Array): StatusEvent | null {
 /**
  * What the board means by each error code, and what to do about it. Mirrors the
  * desktop app's table so the two front ends give the same advice - these codes
- * are the difference between "it failed" and "you signed with the wrong key".
+ * are the difference between "it failed" and "the board still verifies
+ * signatures". Ported from `DEVICE_ERRORS` in ESP32-Tools' `protocol.py`.
  */
 export const DEVICE_ERRORS: Record<number, { title: string; hint: string }> = {
   0x01: {
@@ -126,10 +166,12 @@ export const DEVICE_ERRORS: Record<number, { title: string; hint: string }> = {
   0x11: {
     title: 'Image rejected at finalize',
     hint:
-      'Almost always a SIGNATURE failure. Send the signed app image, never ' +
-      '*-unsigned.bin, and make sure it was signed with the same ' +
-      'ota_signing_key.pem baked into the firmware now running on the board. ' +
-      'A key cannot be changed over the air - only over USB.',
+      'The current toolchain builds with signature verification off, so the ' +
+      'usual cause is a board still running firmware from before that change: ' +
+      'it verifies the next update and rejects an unsigned one. Flash that ' +
+      'board over USB once with the desktop app and it takes unsigned updates ' +
+      'from then on. Otherwise the image is truncated or corrupt - check its ' +
+      'size against the file.',
   },
   0x12: {
     title: 'Could not set the boot partition',

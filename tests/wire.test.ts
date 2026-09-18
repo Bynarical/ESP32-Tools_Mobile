@@ -92,10 +92,13 @@ test('decodeStatus understands every event the firmware sends', () => {
   assert.equal(err?.kind, 'error');
   if (err?.kind === 'error') {
     assert.equal(err.code, 0x11);
-    // 0x11 is the one users hit; it must name signing, not just "failed".
+    // 0x11 is the one users hit. Since the toolchain stopped signing, its
+    // usual cause is a board that still verifies - so the hint has to name
+    // that, and the one-time USB flash that fixes it, not a key file.
     assert.match(err.title, /rejected at finalize/i);
-    assert.match(err.hint, /signature/i);
-    assert.match(err.hint, /ota_signing_key\.pem/);
+    assert.match(err.hint, /signature verification off/i);
+    assert.match(err.hint, /USB/);
+    assert.match(err.hint, /truncated or corrupt/i);
   }
 });
 
@@ -181,13 +184,40 @@ test('a good image is read correctly and raises nothing', () => {
   assert.match(summarize(info), /ble_ota_c3.*v1\.2\.3.*signed/);
 });
 
-test('an unsigned image is a problem, and says why before the upload', () => {
+test('an unsigned image is the expected shape now - a warning, not a problem', () => {
+  // The desktop toolchain leaves signature verification off, so every image it
+  // produces is unsigned and a board flashed from it takes them. The one board
+  // that would refuse is worth a word, which is what the warning is.
   const info = inspectImage(fakeImage({ signed: false }));
   assert.equal(info.signed, false);
-  assert.equal(info.problems.length, 1);
-  assert.match(info.problems[0], /not signed/i);
-  assert.match(info.problems[0], /0x11/);
-  assert.match(summarize(info), /UNSIGNED/);
+  assert.deepEqual(info.problems, []);
+  assert.equal(info.warnings.length, 1);
+  assert.match(info.warnings[0], /unsigned/i);
+  assert.match(info.warnings[0], /0x11/);
+  assert.match(info.warnings[0], /USB/);
+  assert.match(summarize(info), /unsigned/);
+});
+
+test('a file named -unsigned.bin gets the note about its signed sibling', () => {
+  const info = inspectImage(fakeImage({ signed: false }), 'app-unsigned.bin');
+  assert.equal(info.problems.length, 0);
+  assert.ok(info.warnings.some((w) => /-unsigned/.test(w)));
+  const plain = inspectImage(fakeImage({ signed: false }), 'app.bin');
+  assert.ok(!plain.warnings.some((w) => /-unsigned/.test(w)));
+});
+
+test('the Wi-Fi half of the OTA service is recognised, as the desktop app does', () => {
+  const marker = [...'wifi_ssid'].map((c) => c.charCodeAt(0));
+  const withWifi = fakeImage();
+  withWifi.set(marker, 0x600);
+  const info = inspectImage(withWifi);
+  assert.equal(info.keepsOta, true);
+  assert.equal(info.keepsWifiOta, true);
+  assert.match(summarize(info), /BLE \+ Wi-Fi/);
+
+  const bleOnly = inspectImage(fakeImage());
+  assert.equal(bleOnly.keepsWifiOta, false);
+  assert.match(summarize(bleOnly), /keeps OTA \(BLE\)/);
 });
 
 test('an image for the wrong chip is a problem', () => {

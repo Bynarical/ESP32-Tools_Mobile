@@ -20,6 +20,7 @@
     "src/ota/session.ts",
     "src/ota/config.ts",
     "src/ota/configSession.ts",
+    "src/ota/retry.ts",
     "tests/**/*.ts"
   ]
 }

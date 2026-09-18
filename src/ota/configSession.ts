@@ -4,7 +4,9 @@
  * Same shape and the same reasoning as `session.ts`: the CFG characteristic is
  * `WRITE_ENC` exactly like CTRL and DATA, so this is the same connect-and-bond
  * dance as an upload, and the part that can be silently wrong is kept testable
- * against a fake board. Mirrors `Daemon._config_session()` in the desktop app.
+ * against a fake board. Mirrors `config_session()` in the desktop app's
+ * `bleota.py`; the retry around a whole attempt lives with the caller, as the
+ * desktop's `push_config()` does.
  *
  * The order matters and is deliberate: read what is stored *before* writing.
  * It is what puts "it currently reports X" in the log, and it is how a board
@@ -56,6 +58,11 @@ export interface CfgOutcome {
   stored?: StoredConfig;
   /** The firmware predates the settings characteristic. */
   unsupported?: boolean;
+  /**
+   * The board's own code when it refused the settings. A verdict, so the
+   * caller's retry policy stops on it: the same payload gets the same answer.
+   */
+  deviceCode?: number;
 }
 
 export interface CfgOptions {
@@ -70,6 +77,7 @@ export class ConfigSession {
 
   private deviceError: string | null = null;
   private deviceHint: string | null = null;
+  private deviceCode: number | null = null;
   private readonly ackTimeoutMs: number;
 
   constructor(
@@ -92,6 +100,7 @@ export class ConfigSession {
         .padStart(2, '0')
         .toUpperCase()})`;
       this.deviceHint = ev.hint;
+      this.deviceCode = ev.code;
       this.failed.set();
     }
   }
@@ -211,6 +220,7 @@ export class ConfigSession {
         error: this.deviceError ?? 'the board rejected the settings',
         hint: this.deviceHint ?? undefined,
         stored,
+        deviceCode: this.deviceCode ?? undefined,
       };
     }
     if (woke >= 0) {

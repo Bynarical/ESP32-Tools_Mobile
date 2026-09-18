@@ -6,8 +6,9 @@
  * wrong, and against a fake transport it can be tested exhaustively in node.
  * The react-native-ble-plx adapter lives in ../ble/transport.ts.
  *
- * Mirrors `Daemon._one_upload()` in the desktop app's backend, including the
- * decisions that look odd until you know why - see the comments.
+ * Mirrors `upload_once()` and `_stream()` in the desktop app's `bleota.py`,
+ * including the decisions that look odd until you know why - see the comments.
+ * The retry around a whole attempt lives with the caller, as it does there.
  */
 import { Gate, waitAny } from '../lib/gate';
 import {
@@ -73,6 +74,12 @@ export interface OtaOutcome {
   error?: string;
   hint?: string;
   cancelled?: boolean;
+  /**
+   * The board's own error code when it, rather than the link, ended the
+   * transfer. The caller's retry policy reads it: some codes describe the
+   * image and will come back identical on every attempt.
+   */
+  deviceCode?: number;
 }
 
 export class OtaSession {
@@ -85,6 +92,7 @@ export class OtaSession {
   private deviceOk = false;
   private deviceError: string | null = null;
   private deviceHint: string | null = null;
+  private deviceCode: number | null = null;
 
   private readonly fast: boolean;
   private readonly window: number;
@@ -130,6 +138,7 @@ export class OtaSession {
           .padStart(2, '0')
           .toUpperCase()})`;
         this.deviceHint = ev.hint;
+        this.deviceCode = ev.code;
         this.finished.set();
         break;
       default:
@@ -245,7 +254,7 @@ export class OtaSession {
       }
     }
 
-    this.phase('finalizing', 'the board is verifying the signature');
+    this.phase('finalizing', 'the board is verifying the image');
     const elapsed = Math.max((this.now() - t0) / 1000, 1e-6);
     this.log(
       `streamed ${total.toLocaleString()} bytes in ${elapsed.toFixed(1)}s ` +
@@ -272,6 +281,7 @@ export class OtaSession {
         ok: false,
         error: this.deviceError ?? 'the board reported an error',
         hint: this.deviceHint ?? undefined,
+        deviceCode: this.deviceCode ?? undefined,
       };
     }
 
@@ -292,6 +302,11 @@ export class OtaSession {
 
   private abortOutcome(error: string): OtaOutcome {
     this.phase('idle');
-    return { ok: false, error, hint: this.deviceHint ?? undefined };
+    return {
+      ok: false,
+      error,
+      hint: this.deviceHint ?? undefined,
+      deviceCode: this.deviceCode ?? undefined,
+    };
   }
 }
