@@ -184,6 +184,22 @@ test('a good image is read correctly and raises nothing', () => {
   assert.match(summarize(info), /ble_ota_c3.*v1\.2\.3.*signed/);
 });
 
+test('a version that already carries its own v is not prefixed again', () => {
+  // ESP-IDF fills PROJECT_VER from `git describe` unless something else sets
+  // it, so every image off the bench arrives as "v1.0.7-27-g044f306-dirty".
+  // The fixture above uses a bare "1.2.3", which is why this went unnoticed
+  // until a real board image was put through the inspector.
+  const img = fakeImage();
+  const version = 'v1.0.7-27-g044f306';
+  for (let i = 0; i < version.length; i++) img[0x30 + i] = version.charCodeAt(i);
+  img[0x30 + version.length] = 0;
+
+  const info = inspectImage(img);
+  assert.equal(info.version, version);
+  assert.match(summarize(info), /ble_ota_c3.*v1\.0\.7-27-g044f306.*ESP32-C3/);
+  assert.ok(!summarize(info).includes('vv'), 'the v must not be doubled');
+});
+
 test('an unsigned image is the expected shape now - a warning, not a problem', () => {
   // The desktop toolchain leaves signature verification off, so every image it
   // produces is unsigned and a board flashed from it takes them. The one board

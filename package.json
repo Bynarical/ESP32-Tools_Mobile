@@ -15,14 +15,17 @@
   "devDependencies": {
     "@types/node": "^26.4.0",
     "@types/react": "~19.2.2",
+    "esbuild": "^0.28.2",
     "typescript": "~6.0.3"
   },
   "scripts": {
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
-    "test": "tsc -p tsconfig.test.json && node --test .test-build/tests/wire.test.js .test-build/tests/session.test.js .test-build/tests/config.test.js .test-build/tests/retry.test.js",
-    "typecheck": "tsc --noEmit"
+    "test": "tsc -p tsconfig.test.json && node --test .test-build/tests/wire.test.js .test-build/tests/session.test.js .test-build/tests/config.test.js .test-build/tests/retry.test.js .test-build/web/tests/capabilities.test.js .test-build/web/tests/wifiParse.test.js",
+    "typecheck": "tsc --noEmit && tsc -p web/tsconfig.json",
+    "build:web": "node web/build.mjs",
+    "serve:web": "node web/build.mjs --serve"
   },
   "private": true
 }

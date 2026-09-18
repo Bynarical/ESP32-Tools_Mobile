@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ESP32 OTA</title>
+<style>
+  :root {
+    --bg: #0d0f14;
+    --panel: #151923;
+    --panel-2: #1b2130;
+    --line: #262d3d;
+    --ink: #e7ebf3;
+    --dim: #97a1b5;
+    --accent: #4da3ff;
+    --ok: #46c08a;
+    --warn: #e0a341;
+    --bad: #e2603f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding: 0 16px 48px;
+  }
+  main { max-width: 680px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 24px 0 4px; }
+  h2 {
+    font-size: 13px; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--dim); margin: 28px 0 10px; font-weight: 600;
+  }
+  .headline { color: var(--dim); margin: 0 0 20px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  .caps { display: grid; gap: 12px; }
+  .cap { display: grid; grid-template-columns: 90px 1fr; gap: 10px; align-items: start; }
+  .cap__name { color: var(--dim); font-weight: 600; }
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: 12px; font-weight: 600; margin-bottom: 4px;
+  }
+  .badge--full { background: rgba(70,192,138,.16); color: var(--ok); }
+  .badge--degraded { background: rgba(224,163,65,.16); color: var(--warn); }
+  .badge--unusable { background: rgba(226,96,63,.16); color: var(--bad); }
+  .cap__detail { color: var(--dim); font-size: 13px; }
+  .tabs { display: flex; gap: 8px; margin: 0 0 14px; }
+  .tab {
+    flex: 1; padding: 10px; border-radius: 10px; cursor: pointer;
+    background: var(--panel-2); color: var(--ink);
+    border: 1px solid var(--line); font: inherit; font-weight: 600;
+  }
+  .tab--on { border-color: var(--accent); color: var(--accent); }
+  .tab:disabled { opacity: .4; cursor: not-allowed; }
+  label { display: block; font-size: 13px; color: var(--dim); margin: 12px 0 4px; }
+  input[type=text], input[type=password] {
+    width: 100%; padding: 10px 12px; border-radius: 9px;
+    background: var(--panel-2); border: 1px solid var(--line);
+    color: var(--ink); font: inherit;
+  }
+  input[type=file] { color: var(--dim); font: inherit; width: 100%; }
+  button {
+    padding: 11px 16px; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--panel-2); color: var(--ink); font: inherit;
+    font-weight: 600; cursor: pointer;
+  }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .primary { background: var(--accent); border-color: var(--accent); color: #05111f; width: 100%; margin-top: 16px; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row > input { flex: 1; }
+  .muted { color: var(--dim); font-size: 13px; }
+  .count { font-size: 12px; color: var(--dim); }
+  .count.over { color: var(--bad); }
+  .check { display: flex; gap: 8px; align-items: center; margin-top: 10px; font-size: 13px; color: var(--dim); }
+  pre.image {
+    white-space: pre-wrap; background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 9px; padding: 10px 12px; font-size: 13px; margin: 12px 0 0;
+  }
+  .bar { height: 8px; background: var(--panel-2); border-radius: 999px; overflow: hidden; margin: 14px 0 6px; }
+  .bar__fill { height: 100%; width: 0; background: var(--accent); transition: width .15s linear; }
+  .phase { font-size: 13px; color: var(--dim); }
+  .result { white-space: pre-line; border-radius: 10px; padding: 12px 14px; margin-top: 14px; font-size: 14px; }
+  .result--ok { background: rgba(70,192,138,.12); border: 1px solid rgba(70,192,138,.4); }
+  .result--bad { background: rgba(226,96,63,.12); border: 1px solid rgba(226,96,63,.4); }
+  .log {
+    height: 190px; overflow-y: auto; background: #0a0d13; border: 1px solid var(--line);
+    border-radius: 9px; padding: 10px; font: 12px/1.5 ui-monospace, "Cascadia Code", Consolas, monospace;
+    color: var(--dim); white-space: pre-wrap;
+  }
+  .log__row--warn { color: var(--warn); }
+  .log__row--error { color: var(--bad); }
+  .loghead { display: flex; justify-content: space-between; align-items: baseline; }
+  .loghead button { padding: 4px 10px; font-size: 12px; }
+  footer { color: var(--dim); font-size: 12px; margin-top: 28px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>ESP32 OTA</h1>
+  <p class="headline" id="headline"></p>
+
+  <section class="caps">
+    <div class="cap">
+      <div class="cap__name">Bluetooth</div>
+      <div>
+        <span class="badge" id="cap-ble"></span>
+        <div class="cap__detail" id="cap-ble-detail"></div>
+      </div>
+    </div>
+    <div class="cap">
+      <div class="cap__name">Wi-Fi</div>
+      <div>
+        <span class="badge" id="cap-wifi"></span>
+        <div class="cap__detail" id="cap-wifi-detail"></div>
+      </div>
+    </div>
+  </section>
+
+  <h2>1 &middot; Firmware</h2>
+  <section>
+    <input type="file" id="file">
+    <pre class="image" id="image" hidden></pre>
+  </section>
+
+  <h2>2 &middot; How to send it</h2>
+  <section>
+    <div class="tabs">
+      <button class="tab" id="tab-ble" type="button">Bluetooth</button>
+      <button class="tab" id="tab-wifi" type="button">Wi-Fi</button>
+    </div>
+
+    <div id="panel-ble" hidden>
+      <div class="row">
+        <button id="pick-board" type="button">Choose board&hellip;</button>
+        <span class="muted" id="board-name">no board chosen</span>
+      </div>
+      <label class="check">
+        <input type="checkbox" id="any-device">
+        Show every nearby device, not just boards advertising the OTA service
+      </label>
+
+      <label for="cfg-name">Bluetooth name <span class="count" id="cfg-name-count"></span></label>
+      <input type="text" id="cfg-name" autocomplete="off" placeholder="leave blank to keep">
+      <label for="cfg-ssid">Wi-Fi network <span class="count" id="cfg-ssid-count"></span></label>
+      <input type="text" id="cfg-ssid" autocomplete="off" placeholder="leave blank to keep">
+      <label for="cfg-pass">Wi-Fi password <span class="count" id="cfg-pass-count"></span></label>
+      <input type="password" id="cfg-pass" autocomplete="off" placeholder="blank means an open network">
+      <p class="muted" id="stored" hidden></p>
+      <div class="row" style="margin-top:12px">
+        <button id="read-settings" type="button" disabled>Read from board</button>
+        <button id="write-settings" type="button" disabled>Change settings over BLE</button>
+      </div>
+      <p class="muted">
+        <strong>Change settings over BLE</strong> writes them on their own and
+        restarts the board to apply them &mdash; no firmware involved. Left to
+        the upload below instead, they are stored just before it and applied by
+        the reboot at the end, so a new build can arrive on a new network under
+        a new name in one visit. Blank fields are never sent, so the board
+        keeps what it has.
+      </p>
+    </div>
+
+    <div id="panel-wifi" hidden>
+      <label for="host">Board address</label>
+      <div class="row">
+        <input type="text" id="host" placeholder="192.168.0.127" autocomplete="off" spellcheck="false">
+        <button id="check" type="button">Check</button>
+      </div>
+      <p class="muted">
+        The address the board reported over Bluetooth, or the one your router
+        shows. Add <code>:8080</code> if it serves on another port.
+      </p>
+    </div>
+
+    <button class="primary" id="run" type="button" disabled>Upload</button>
+    <button id="cancel" type="button" hidden style="width:100%;margin-top:8px">Cancel</button>
+
+    <div class="bar"><div class="bar__fill" id="bar-fill"></div></div>
+    <div class="phase" id="phase"></div>
+    <div class="phase" id="progress-text"></div>
+    <div class="result" id="result" hidden></div>
+  </section>
+
+  <h2 class="loghead">
+    <span>Log</span>
+    <button id="clear-log" type="button">Clear</button>
+  </h2>
+  <section>
+    <div class="log" id="log"></div>
+    <p class="muted" style="margin-bottom:0">
+      This session only &mdash; nothing is saved in the browser.
+    </p>
+  </section>
+
+  <footer>
+    Shares its protocol, image inspector, transfer state machine and retry
+    policy with the ESP32 OTA mobile app and with ESP32 Tools on the desktop.
+  </footer>
+</main>
+<script type="module" src="./app.js"></script>
+</body>
+</html>

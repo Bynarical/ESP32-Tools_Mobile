@@ -9,9 +9,16 @@ provisions a blank board over USB. This app does not provision and does not
 sign — it sends an already-signed image to a board that is already running the
 OTA firmware.
 
+There is also a **browser version** in [`web/`](web/README.md), sharing this
+app's protocol, image inspector, transfer state machine and retry policy by
+importing them directly. It speaks Bluetooth *and* the board's Wi-Fi OTA
+endpoint, and needs no install. Note that Web Bluetooth does not exist on iOS
+in any browser, so on iPhone the web version is Wi-Fi only; its README has the
+full matrix of what works where.
+
 > **Status: not yet run on a device.** The protocol, the image inspector, the
 > transfer state machine, the settings path and the retry policy are
-> unit-tested (67 tests) and the whole app type-checks against the real library
+> unit-tested (86 tests) and the whole app type-checks against the real library
 > types, but nobody has installed this on a phone or pointed it at a board. See
 > [Building](#building) — this machine has no Android SDK.
 
@@ -161,7 +168,7 @@ wire protocol and the flow control — testable in plain node with a fake board.
 ## Testing
 
 ```bash
-npm test        # 67 tests, ~500 ms
+npm test        # 86 tests, all front ends
 npm run typecheck
 ```
 

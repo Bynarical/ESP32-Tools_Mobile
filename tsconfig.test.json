@@ -21,6 +21,9 @@
     "src/ota/config.ts",
     "src/ota/configSession.ts",
     "src/ota/retry.ts",
-    "tests/**/*.ts"
+    "web/src/capabilities.ts",
+    "web/src/transport/wifiParse.ts",
+    "tests/**/*.ts",
+    "web/tests/**/*.ts"
   ]
 }

@@ -182,7 +182,12 @@ export function summarize(info: ImageInfo): string {
   if (!info.valid) return 'Not an ESP32 application image';
   const bits: string[] = [];
   if (info.project) bits.push(info.project);
-  if (info.version) bits.push(`v${info.version}`);
+  // ESP-IDF takes PROJECT_VER from `git describe` when nothing else sets
+  // it, so a real build already carries its own 'v' - prefixing blindly
+  // printed 'vv1.0.7-27-g044f306-dirty' on every image off the bench.
+  if (info.version) {
+    bits.push(/^v\d/i.test(info.version) ? info.version : `v${info.version}`);
+  }
   bits.push(`${(info.sizeBytes / 1024).toFixed(1)} KB`);
   if (info.chip) bits.push(info.chip);
   bits.push(

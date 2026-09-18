@@ -3,6 +3,6 @@
   "compilerOptions": {
     "strict": true
   },
-  "//": "tests/ runs in node, not React Native, so it is typechecked by tsconfig.test.json instead - node globals do not exist in this config.",
-  "exclude": ["tests", ".test-build", "node_modules"]
+  "//": "tests/ runs in node and web/ runs in a browser, neither of which is React Native, so each is typechecked by its own config - tsconfig.test.json and web/tsconfig.json. Node and DOM globals do not exist here.",
+  "exclude": ["tests", "web", ".test-build", "node_modules"]
 }
