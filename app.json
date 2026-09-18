@@ -2,7 +2,7 @@
   "expo": {
     "name": "ESP32 OTA",
     "slug": "esp32-ota-mobile",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -33,6 +33,39 @@
           "isBackgroundEnabled": false,
           "neverForLocation": true,
           "bluetoothAlwaysPermission": "ESP32 OTA uses Bluetooth to find your board and send firmware to it."
+        }
+      ],
+      [
+        "expo-font",
+        {
+          "android": {
+            "fonts": [
+              {
+                "fontFamily": "Pretendard",
+                "fontDefinitions": [
+                  {
+                    "path": "./assets/fonts/Pretendard-Regular.ttf",
+                    "weight": 400
+                  },
+                  {
+                    "path": "./assets/fonts/Pretendard-SemiBold.ttf",
+                    "weight": 600
+                  },
+                  {
+                    "path": "./assets/fonts/Pretendard-Bold.ttf",
+                    "weight": 700
+                  }
+                ]
+              }
+            ]
+          },
+          "ios": {
+            "fonts": [
+              "./assets/fonts/Pretendard-Regular.ttf",
+              "./assets/fonts/Pretendard-SemiBold.ttf",
+              "./assets/fonts/Pretendard-Bold.ttf"
+            ]
+          }
         }
       ]
     ],

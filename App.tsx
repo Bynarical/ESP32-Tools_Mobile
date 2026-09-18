@@ -1049,12 +1049,24 @@ export default function App() {
   );
 }
 
+/**
+ * Pretendard, embedded at build time by the expo-font config plugin in
+ * app.json rather than loaded with useFonts - the plugin registers the faces
+ * natively, so there is no loading state to render around and no flash of the
+ * system font on launch.
+ *
+ * Every text style names it explicitly. React Native has no cascade: a style
+ * that leaves fontFamily out gets Roboto, and the mismatch is invisible in
+ * review and obvious on a phone.
+ */
+const FONT = 'Pretendard';
+
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.bg },
   scroll: { padding: 14, paddingTop: 48, gap: 12 },
   header: { marginBottom: 2 },
-  title: { color: C.text, fontSize: 22, fontWeight: '700' },
-  sub: { color: C.dim, fontSize: 12, marginTop: 2 },
+  title: { color: C.text, fontFamily: FONT, fontSize: 22, fontWeight: '700' },
+  sub: { color: C.dim, fontFamily: FONT, fontSize: 12, marginTop: 2 },
 
   card: {
     backgroundColor: C.card,
@@ -1066,6 +1078,7 @@ const s = StyleSheet.create({
   },
   h2: {
     color: C.muted,
+    fontFamily: FONT,
     fontSize: 11,
     fontWeight: '700',
     letterSpacing: 1,
@@ -1084,7 +1097,7 @@ const s = StyleSheet.create({
   btnGhost: { backgroundColor: 'transparent' },
   btnDanger: { backgroundColor: '#3a1d22', borderColor: C.err },
   btnDisabled: { opacity: 0.45 },
-  btnText: { color: C.text, fontWeight: '600', fontSize: 15 },
+  btnText: { color: C.text, fontWeight: '600', fontFamily: FONT, fontSize: 15 },
   btnSmall: {
     borderColor: C.line,
     borderWidth: 1,
@@ -1092,15 +1105,15 @@ const s = StyleSheet.create({
     paddingVertical: 4,
     paddingHorizontal: 10,
   },
-  btnSmallText: { color: C.muted, fontSize: 12, fontWeight: '600' },
+  btnSmallText: { color: C.muted, fontFamily: FONT, fontSize: 12, fontWeight: '600' },
 
-  empty: { color: C.dim, fontSize: 13, textAlign: 'center', paddingVertical: 10 },
+  empty: { color: C.dim, fontFamily: FONT, fontSize: 13, textAlign: 'center', paddingVertical: 10 },
 
-  cardNote: { color: C.muted, fontSize: 12, lineHeight: 17 },
+  cardNote: { color: C.muted, fontFamily: FONT, fontSize: 12, lineHeight: 17 },
   field: { gap: 5 },
   fieldTop: { flexDirection: 'row', justifyContent: 'space-between' },
-  label: { color: C.text, fontSize: 13, fontWeight: '600' },
-  count: { color: C.dim, fontSize: 11 },
+  label: { color: C.text, fontFamily: FONT, fontSize: 13, fontWeight: '600' },
+  count: { color: C.dim, fontFamily: FONT, fontSize: 11 },
   countOver: { color: C.err, fontWeight: '700' },
   input: {
     backgroundColor: '#0f131c',
@@ -1110,14 +1123,15 @@ const s = StyleSheet.create({
     paddingHorizontal: 11,
     paddingVertical: 10,
     color: C.text,
+    fontFamily: FONT,
     fontSize: 15,
   },
   inputOver: { borderColor: C.err },
-  fieldNote: { color: C.dim, fontSize: 11, lineHeight: 15 },
-  storedLine: { color: C.accent, fontSize: 12, lineHeight: 17 },
+  fieldNote: { color: C.dim, fontFamily: FONT, fontSize: 11, lineHeight: 15 },
+  storedLine: { color: C.accent, fontFamily: FONT, fontSize: 12, lineHeight: 17 },
 
   switchRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  switchLabel: { color: C.text, fontSize: 12, lineHeight: 17, flex: 1 },
+  switchLabel: { color: C.text, fontFamily: FONT, fontSize: 12, lineHeight: 17, flex: 1 },
   switchLabelOff: { color: C.dim },
 
   row: {
@@ -1130,12 +1144,13 @@ const s = StyleSheet.create({
   },
   rowSelected: { borderColor: C.accent },
   rowMain: { flex: 1 },
-  rowTitle: { color: C.text, fontSize: 14, fontWeight: '600' },
-  rowSub: { color: C.dim, fontSize: 11, marginTop: 2 },
+  rowTitle: { color: C.text, fontFamily: FONT, fontSize: 14, fontWeight: '600' },
+  rowSub: { color: C.dim, fontFamily: FONT, fontSize: 11, marginTop: 2 },
 
-  fwName: { color: C.text, fontSize: 14, fontWeight: '600' },
-  fwMeta: { color: C.muted, fontSize: 12 },
+  fwName: { color: C.text, fontFamily: FONT, fontSize: 14, fontWeight: '600' },
+  fwMeta: { color: C.muted, fontFamily: FONT, fontSize: 12 },
   note: {
+    fontFamily: FONT,
     fontSize: 12,
     lineHeight: 17,
     borderLeftWidth: 3,
@@ -1147,8 +1162,8 @@ const s = StyleSheet.create({
 
   progressWrap: { gap: 6 },
   progressTop: { flexDirection: 'row', justifyContent: 'space-between' },
-  phase: { color: C.text, fontSize: 13, flex: 1 },
-  pct: { color: C.text, fontSize: 15, fontWeight: '700' },
+  phase: { color: C.text, fontFamily: FONT, fontSize: 13, flex: 1 },
+  pct: { color: C.text, fontFamily: FONT, fontSize: 15, fontWeight: '700' },
   bar: {
     height: 9,
     borderRadius: 6,
@@ -1158,16 +1173,16 @@ const s = StyleSheet.create({
     overflow: 'hidden',
   },
   barFill: { height: '100%', backgroundColor: C.accent },
-  stats: { color: C.dim, fontSize: 11 },
+  stats: { color: C.dim, fontFamily: FONT, fontSize: 11 },
 
   result: { borderRadius: 10, borderWidth: 1, padding: 11, gap: 4 },
   resultOk: { backgroundColor: 'rgba(63,208,138,0.10)', borderColor: C.ok },
   resultErr: { backgroundColor: 'rgba(242,100,106,0.10)', borderColor: C.err },
-  resultText: { color: C.text, fontSize: 13, fontWeight: '600' },
-  resultHint: { color: C.muted, fontSize: 12, lineHeight: 17 },
+  resultText: { color: C.text, fontFamily: FONT, fontSize: 13, fontWeight: '600' },
+  resultHint: { color: C.muted, fontFamily: FONT, fontSize: 12, lineHeight: 17 },
 
-  pairNote: { color: C.dim, fontSize: 11, lineHeight: 16 },
+  pairNote: { color: C.dim, fontFamily: FONT, fontSize: 11, lineHeight: 16 },
   logHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  logNote: { color: C.dim, fontSize: 11 },
-  logLine: { color: '#b9c1d4', fontSize: 11, lineHeight: 16 },
+  logNote: { color: C.dim, fontFamily: FONT, fontSize: 11 },
+  logLine: { color: '#b9c1d4', fontFamily: FONT, fontSize: 11, lineHeight: 16 },
 });

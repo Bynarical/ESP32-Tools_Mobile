@@ -13,8 +13,15 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="ESP32 OTA">
 <link rel="apple-touch-icon" href="./icon.png">
+<!-- Pretendard, bundled not fetched: the app has to render the same on a
+     bench network with no route out. Only the unicode ranges actually on
+     screen are downloaded. -->
+<link rel="stylesheet" href="./fonts/pretendard.css">
 <style>
   :root {
+    --sans: 'Pretendard Variable', Pretendard, ui-sans-serif, system-ui,
+      -apple-system, 'Segoe UI', Roboto, 'Malgun Gothic', sans-serif;
+    --mono: ui-monospace, 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
     --bg: #0d0f14;
     --panel: #151923;
     --panel-2: #1b2130;
@@ -31,7 +38,11 @@
     margin: 0;
     background: var(--bg);
     color: var(--ink);
-    font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font: 15px/1.6 var(--sans);
+    /* Pretendard draws Latin and Hangul on one set of proportions, which
+       is why a Korean board name sits level with the English around it
+       instead of dropping to a second typeface mid-sentence. */
+    font-feature-settings: "ss01", "tnum";
     padding: 0 16px 48px;
   }
   main { max-width: 680px; margin: 0 auto; }
@@ -94,7 +105,7 @@
   .result--bad { background: rgba(226,96,63,.12); border: 1px solid rgba(226,96,63,.4); }
   .log {
     height: 190px; overflow-y: auto; background: #0a0d13; border: 1px solid var(--line);
-    border-radius: 9px; padding: 10px; font: 12px/1.5 ui-monospace, "Cascadia Code", Consolas, monospace;
+    border-radius: 9px; padding: 10px; font: 12px/1.55 var(--mono);
     color: var(--dim); white-space: pre-wrap;
   }
   .log__row--warn { color: var(--warn); }

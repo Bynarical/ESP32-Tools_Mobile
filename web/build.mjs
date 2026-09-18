@@ -55,6 +55,38 @@ await Promise.all([
   cp(join(root, 'assets', 'favicon.png'), join(outdir, 'favicon.png')),
 ]);
 
+/*
+ * Pretendard, copied out of node_modules rather than committed.
+ *
+ * The dynamic-subset build is the right one here and not the single 2 MB
+ * variable file, because this page is opened on a phone over a network and
+ * the Hangul is most of that weight. Split across 92 unicode-range faces, a
+ * browser fetches only what it renders: measured at ~129 KB over five faces
+ * for this app, against 2 MB for the whole family.
+ *
+ * Note it is not Latin alone. The log stamps each line with
+ * toLocaleTimeString(), which on a Korean system reads "오후 2:53", and a
+ * board may be named in Hangul - the settings fields count UTF-8 bytes
+ * precisely because people do. A Latin-only face would have dropped to a
+ * fallback font on every log line, which is the thing this replaces.
+ *
+ * The stylesheet's urls are relative to itself, so the folder has to keep its
+ * name and sit beside it.
+ */
+const pretendard = join(root, 'node_modules', 'pretendard', 'dist', 'web', 'variable');
+await mkdir(join(outdir, 'fonts'), { recursive: true });
+await Promise.all([
+  cp(
+    join(pretendard, 'pretendardvariable-dynamic-subset.css'),
+    join(outdir, 'fonts', 'pretendard.css')
+  ),
+  cp(
+    join(pretendard, 'woff2-dynamic-subset'),
+    join(outdir, 'fonts', 'woff2-dynamic-subset'),
+    { recursive: true }
+  ),
+]);
+
 /** @type {import('esbuild').BuildOptions} */
 const options = {
   entryPoints: [join(here, 'src', 'main.ts')],

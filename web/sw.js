@@ -13,8 +13,20 @@
  * is only the offline safety net. CACHE is versioned, and activate deletes
  * every older one, so a deploy cannot leave two bundles interleaved.
  */
-const CACHE = 'esp32-ota-v1';
-const SHELL = ['.', 'index.html', 'app.js', 'manifest.webmanifest', 'icon.png'];
+const CACHE = 'esp32-ota-v2';
+const SHELL = [
+  '.',
+  'index.html',
+  'app.js',
+  'manifest.webmanifest',
+  'icon.png',
+  'fonts/pretendard.css',
+  // Only the Latin face is precached. Pretendard is split into 92
+  // unicode-range subsets and this is the one every screen of an English UI
+  // needs; the Hangul chunks are fetched on demand and cached as they are
+  // used, which is the whole point of shipping it split.
+  'fonts/woff2-dynamic-subset/PretendardVariable.subset.91.woff2',
+];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
