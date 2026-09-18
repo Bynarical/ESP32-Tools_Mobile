@@ -1,0 +1,25 @@
+{
+  "name": "ESP32 OTA",
+  "short_name": "ESP32 OTA",
+  "description": "Send firmware to an ESP32-C3 over Bluetooth or Wi-Fi, from a browser.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0d0f14",
+  "theme_color": "#0d0f14",
+  "icons": [
+    {
+      "src": "icon.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

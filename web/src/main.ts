@@ -649,4 +649,23 @@ function main(): void {
   log(S.caps.headline);
 }
 
-document.addEventListener('DOMContentLoaded', main);
+/**
+ * Register the service worker, when the browser will have one.
+ *
+ * Service workers need a secure context, so this is a no-op on the plain-http
+ * LAN address a phone uses for Wi-Fi uploads - that page works, it just cannot
+ * be installed or opened offline. Failing here must never stop the app: an
+ * update tool that refuses to load because its cache layer complained would be
+ * worse than one that simply has no cache.
+ */
+function registerServiceWorker(): void {
+  if (!('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.register('./sw.js').catch(() => {
+    // Insecure origin, or the file is not being served. Neither is fatal.
+  });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  main();
+  registerServiceWorker();
+});

@@ -67,11 +67,29 @@ export const isLocalHost = (hostname: string): boolean =>
 /**
  * Web Bluetooth, or the reason there isn't any.
  *
- * The two failures are worth distinguishing because only one of them is the
- * user's to fix: an insecure origin is a hosting choice, a missing
- * implementation is Apple's.
+ * The insecure origin is tested *first*, and that order matters. A browser on
+ * an insecure origin does not merely refuse the call - it removes
+ * `navigator.bluetooth` from the page entirely, so the missing API cannot be
+ * told apart from Safari never having implemented it. Reporting "this browser
+ * has no Web Bluetooth" to somebody running Chrome over plain http would be
+ * both wrong and a dead end, while the secure-context reason is the one they
+ * can act on. On a secure origin the absence is real, and only then is it
+ * worth naming whose decision it was.
  */
 export function assessBle(env: PageEnv): TransportState {
+  if (!env.secureContext) {
+    return {
+      id: 'ble',
+      grade: 'unusable',
+      summary: 'Needs https or localhost',
+      detail:
+        'Web Bluetooth is only offered to a secure context, and this page is ' +
+        `on ${env.protocol}//${env.hostname}, which is not one - the browser ` +
+        'hides the API completely. Open the app from http://localhost on a ' +
+        'computer, or serve it over https, and Bluetooth appears. On an ' +
+        'iPhone it will not appear either way; use Wi-Fi there.',
+    };
+  }
   if (!env.hasWebBluetooth) {
     return {
       id: 'ble',
@@ -83,17 +101,6 @@ export function assessBle(env: PageEnv): TransportState {
         'required to use WebKit, Chrome and Firefox on iPhone cannot offer ' +
         'it either. Use Chrome or Edge on Windows, macOS, Linux or Android - ' +
         'or, on iPhone, use Wi-Fi instead.',
-    };
-  }
-  if (!env.secureContext) {
-    return {
-      id: 'ble',
-      grade: 'unusable',
-      summary: 'Needs https or localhost',
-      detail:
-        'Web Bluetooth is only offered to a secure context. This page is on ' +
-        `${env.protocol}//${env.hostname}, which is not one. Serve it over ` +
-        'https, or open it from http://localhost, and Bluetooth appears.',
     };
   }
   return {
@@ -183,11 +190,17 @@ export function assessWifi(env: PageEnv): TransportState {
   };
 }
 
+/**
+ * The headline quotes the failing transport's own summary rather than
+ * restating a reason, which is what let it claim "this browser has no
+ * Bluetooth" at an address where the browser had it and the origin was the
+ * problem. One source of truth, so the two can never disagree again.
+ */
 function headlineFor(ble: TransportState, wifi: TransportState): string {
   const ok = (t: TransportState) => t.grade !== 'unusable';
   if (ok(ble) && ok(wifi)) return 'Bluetooth and Wi-Fi are both available here.';
-  if (ok(ble)) return 'Bluetooth only here - Wi-Fi is blocked at this address.';
-  if (ok(wifi)) return 'Wi-Fi only here - this browser has no Bluetooth.';
+  if (ok(ble)) return `Bluetooth only here. Wi-Fi: ${wifi.summary.toLowerCase()}.`;
+  if (ok(wifi)) return `Wi-Fi only here. Bluetooth: ${ble.summary.toLowerCase()}.`;
   return 'Neither transport works at this address. See the notes below.';
 }
 

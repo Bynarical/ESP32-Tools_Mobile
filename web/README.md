@@ -7,9 +7,33 @@ importing them from `../src` — nothing is re-implemented here, so the two
 front ends cannot drift.
 
 ```bash
-npm run serve:web     # http://localhost:8123, rebuilds on change
-npm run build:web     # web/dist: index.html + a 26 KB app.js
+npm run serve:web     # rebuilds on change, and prints an address for your phone
+npm run build:web     # web/dist: a page, a 26 KB bundle, a manifest and an icon
 ```
+
+## Running it on a phone
+
+`npm run serve:web` binds every interface and prints both addresses:
+
+```
+    this PC        http://localhost:8123
+                   Bluetooth and Wi-Fi both work here.
+
+    a phone        http://192.168.0.14:8123
+                   Wi-Fi only - plain http is not a secure
+                   context, so the browser withholds Bluetooth.
+                   This is the address an iPhone can use.
+```
+
+Open the second one on the phone — same Wi-Fi network as the PC — and the
+Wi-Fi upload works, **including on an iPhone**. That is the only way an iPhone
+can drive this board from a browser today, and it needs no hosting decision,
+no account and no App Store.
+
+What it cannot do from that address is Bluetooth, on any phone, because a
+plain-`http` LAN origin is not a secure context and browsers withhold the API
+entirely there. For Bluetooth from an Android phone you need an `https` host —
+see GitHub Pages below.
 
 ## Read this before deciding where to host it
 
@@ -20,8 +44,8 @@ everything**, so pick the one that matches what you need:
 | Where the page is served from | Bluetooth | Wi-Fi |
 |---|---|---|
 | `http://localhost` (`npm run serve:web`) | ✅ full | ⚠️ works, verdict inferred |
-| `https://…` (any normal web host) | ✅ full | ❌ blocked |
-| `http://…` on the LAN | ❌ blocked | ⚠️ works, verdict inferred |
+| `http://<your-pc>` on the LAN — **what a phone opens** | ❌ blocked | ⚠️ works, verdict inferred |
+| `https://…` — GitHub Pages, or any web host | ✅ full | ❌ blocked |
 | `http://<board>` (served by the board) | ❌ blocked | ✅ full |
 | `file://…` opened from disk | ❌ blocked | ❌ blocked |
 
@@ -31,14 +55,55 @@ is that decision, and it is pure, so every row above is a unit test.
 
 **Why each rule bites:**
 
-1. **Web Bluetooth needs a secure context** — `https`, or `localhost`. A page
-   served over plain `http` from a LAN address is not one, so the API is
-   withheld even in Chrome.
+1. **Web Bluetooth needs a secure context** — `https`, or `localhost`. On
+   anything else the browser does not merely refuse the call, it removes
+   `navigator.bluetooth` from the page, which is why the app reports the
+   insecure origin rather than guessing the browser is Safari.
 2. **Mixed content** — a page on `https` may not touch `http://<board>` at
    all. The board speaks plain HTTP and has no certificate. Nothing on the
    board can change this; the browser refuses before anything is sent.
 3. **CORS** — the firmware sends no `Access-Control-Allow-Origin`, so a page
    on a different origin may *send* to the board but may not *read* the reply.
+
+## GitHub Pages
+
+A workflow is ready at [`.github/workflows/pages.yml`](../.github/workflows/pages.yml),
+manual-trigger only until Pages is turned on. Two things to know first.
+
+**Pages can only ever be the Bluetooth half.** Pages is HTTPS-only and
+`*.github.io` is in the browsers' HSTS preload list, so the scheme cannot be
+downgraded even by typing `http://`. A Pages deployment therefore can never
+reach the board over Wi-Fi. That makes it an excellent **Android** tool — any
+phone, Chrome, no install, full BLE upload and settings — and of **no use on an
+iPhone**, which has no Web Bluetooth to fall back on.
+
+**It requires making this repository public.** Pages from a private repository
+needs GitHub Team for an organisation account, and `Bynarical` is on the free
+plan. Worse, even on a paid plan the published site is public by default —
+repository visibility and Pages visibility are separate settings, and truly
+private publishing exists only on Enterprise Cloud. So enabling Pages here
+means the source becomes public.
+
+Once the repository is public: **Settings → Pages → Source: GitHub Actions**,
+then uncomment the `push` trigger in the workflow. The site lands at
+`https://bynarical.github.io/ESP32-Tools_Mobile/`. Every reference in the page
+is relative, so the subpath works without configuration.
+
+## Installing it to a home screen
+
+There is a web app manifest and a small service worker, so on `https` or
+`localhost` the app can be added to the home screen and opened again with no
+internet. That matters here more than for most pages: the board is usually on
+a bench network with no route out, and an update tool that needs the internet
+to *load* is useless exactly when it is wanted.
+
+The service worker is network-first, falling back to the cache — a stale
+bundle that still "works" is the worst outcome for something that writes
+firmware, so a reachable server always wins. It never touches board traffic;
+requests to another origin pass through untouched and uncached.
+
+Service workers also need a secure context, so the plain-`http` LAN address a
+phone uses for Wi-Fi uploads cannot install the app. It still runs there.
 
 ## iOS
 
@@ -46,8 +111,8 @@ is that decision, and it is pure, so every row above is a unit test.
 shipped Web Bluetooth, and Apple requires every iOS browser to use WebKit, so
 Chrome and Firefox there cannot offer it either. On iOS this app is Wi-Fi
 only, which means the board has to be on the network already — and getting it
-onto a network is a Bluetooth job. In practice that means iPhone can update a
-board that is already provisioned, and cannot provision a new one.
+onto a network is a Bluetooth job. In practice an iPhone can update a board
+that is already provisioned, and cannot provision a new one.
 
 Full parity on iPhone needs the native app: the React Native codebase in the
 parent folder already has the iOS paths, and `eas build -p ios` builds it in
@@ -105,6 +170,8 @@ with the restart flag off, and the reboot at the end applies both at once.
 
 ```
 web/index.html               the page, with its CSS inline
+web/manifest.webmanifest     home-screen install
+web/sw.js                    offline shell, network-first
 web/src/capabilities.ts      what works here, and why not      (pure, tested)
 web/src/env.ts               the only reader of live globals
 web/src/files.ts             <input type=file> -> inspected image

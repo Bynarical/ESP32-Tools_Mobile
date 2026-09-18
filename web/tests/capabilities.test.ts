@@ -44,6 +44,10 @@ test('plain http on a LAN address offers Wi-Fi and refuses Bluetooth', () => {
   assert.match(caps.ble.summary, /https or localhost/i);
   assert.equal(caps.wifi.grade, 'degraded');
   assert.match(caps.headline, /Wi-Fi only/i);
+  // The headline must not blame the browser here: Chrome on a LAN address has
+  // Web Bluetooth, it is the origin that withholds it.
+  assert.match(caps.headline, /https or localhost/i);
+  assert.ok(!/no Bluetooth/i.test(caps.headline));
 });
 
 test('a browser without Web Bluetooth is told whose decision that was', () => {
@@ -56,9 +60,21 @@ test('a browser without Web Bluetooth is told whose decision that was', () => {
   assert.match(ble.detail, /Wi-Fi instead/);
 });
 
-test('missing API beats insecure origin - the unfixable reason is named first', () => {
+test('an insecure origin is named before a missing API, because it hides one', () => {
+  // Chrome deletes navigator.bluetooth outright on an insecure origin, so
+  // "this browser has no Web Bluetooth" is indistinguishable from Safari -
+  // and telling somebody on Chrome-over-http that their browser cannot do it
+  // is both wrong and a dead end. The secure-context reason is actionable, so
+  // it wins whenever both apply. Caught by running the app on a LAN address.
   const ble = assessBle(env({ hasWebBluetooth: false, secureContext: false }));
-  assert.match(ble.summary, /Not available in this browser/);
+  assert.match(ble.summary, /https or localhost/i);
+  assert.ok(!/Safari has never shipped/.test(ble.detail));
+  // It must still not promise an iPhone something https cannot deliver.
+  assert.match(ble.detail, /iPhone/);
+
+  // On a secure origin the absence is real, and then it is named.
+  const truly = assessBle(env({ hasWebBluetooth: false, secureContext: true }));
+  assert.match(truly.summary, /Not available in this browser/);
 });
 
 test('a page served by the board itself is the full-strength Wi-Fi case', () => {
