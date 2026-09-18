@@ -30,7 +30,12 @@ import {
   isFatalDeviceCode,
 } from '../../src/ota/protocol';
 
-import { type Capabilities, assess } from './capabilities';
+import {
+  IOS_BLE_BROWSER,
+  IOS_BLE_BROWSER_URL,
+  type Capabilities,
+  assess,
+} from './capabilities';
 import { currentEnv } from './env';
 import { type LoadedFirmware, readFirmware } from './files';
 import {
@@ -116,7 +121,21 @@ function renderCaps(): void {
     const badge = $(`cap-${t.id}`);
     badge.textContent = t.summary;
     badge.className = `badge badge--${t.grade}`;
-    $(`cap-${t.id}-detail`).textContent = t.detail;
+    const detail = $(`cap-${t.id}-detail`);
+    detail.textContent = t.detail;
+
+    // On an iPhone the remedy is a browser, so give them the thing itself
+    // rather than a name to go and search for. textContent everywhere else -
+    // this is the only place the panel needs a link.
+    if (t.id === 'ble' && t.detail.includes(IOS_BLE_BROWSER)) {
+      detail.appendChild(document.createTextNode(' '));
+      const link = document.createElement('a');
+      link.href = IOS_BLE_BROWSER_URL;
+      link.textContent = `Get ${IOS_BLE_BROWSER} →`;
+      link.rel = 'noopener noreferrer';
+      link.target = '_blank';
+      detail.appendChild(link);
+    }
   }
 
   // A transport the browser will not allow should not look clickable.

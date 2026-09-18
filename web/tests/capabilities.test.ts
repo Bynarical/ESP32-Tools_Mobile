@@ -9,7 +9,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { assess, assessBle, assessWifi, isLocalHost, type PageEnv } from '../src/capabilities';
+import {
+  IOS_BLE_BROWSER,
+  IOS_BLE_BROWSER_URL,
+  type PageEnv,
+  assess,
+  assessBle,
+  assessWifi,
+  isLocalHost,
+} from '../src/capabilities';
 
 const env = (over: Partial<PageEnv> = {}): PageEnv => ({
   protocol: 'http:',
@@ -53,11 +61,32 @@ test('plain http on a LAN address offers Wi-Fi and refuses Bluetooth', () => {
 test('a browser without Web Bluetooth is told whose decision that was', () => {
   const ble = assessBle(env({ hasWebBluetooth: false }));
   assert.equal(ble.grade, 'unusable');
-  // iOS is the case that actually sends people here, and the reason is not
-  // something they can change in settings.
-  assert.match(ble.detail, /iOS/);
+  assert.match(ble.detail, /Safari has never shipped/);
+  // A desktop browser must not be sent to an iPhone-only App Store listing.
+  assert.ok(!ble.detail.includes(IOS_BLE_BROWSER));
+});
+
+test('an iPhone is given the browser that fixes it, not a dead end', () => {
+  // WebKit has no Web Bluetooth, but that is not the end of the story: a
+  // third-party browser shipping its own BLE stack gets the same page working
+  // with nothing to install from us. Saying "use Wi-Fi instead" would have
+  // hidden the one route to Bluetooth on an iPhone.
+  const ble = assessBle(env({ hasWebBluetooth: false, appleMobile: true }));
+  assert.equal(ble.grade, 'unusable');
+  assert.match(ble.summary, new RegExp(IOS_BLE_BROWSER));
   assert.match(ble.detail, /WebKit/);
-  assert.match(ble.detail, /Wi-Fi instead/);
+  assert.match(ble.detail, new RegExp(IOS_BLE_BROWSER));
+  assert.match(ble.detail, /no app to install from us/);
+  // The URL must be an App Store link, since that is where it is rendered to.
+  assert.match(IOS_BLE_BROWSER_URL, /^https:\/\/apps\.apple\.com\//);
+});
+
+test('an iPhone on an insecure origin is told https comes first', () => {
+  // Order matters here too: opening the LAN address in that browser still
+  // would not work, because the API needs a secure context either way.
+  const ble = assessBle(env({ hasWebBluetooth: false, appleMobile: true, secureContext: false }));
+  assert.match(ble.summary, /https or localhost/i);
+  assert.match(ble.detail, new RegExp(IOS_BLE_BROWSER));
 });
 
 test('an insecure origin is named before a missing API, because it hides one', () => {
@@ -69,8 +98,8 @@ test('an insecure origin is named before a missing API, because it hides one', (
   const ble = assessBle(env({ hasWebBluetooth: false, secureContext: false }));
   assert.match(ble.summary, /https or localhost/i);
   assert.ok(!/Safari has never shipped/.test(ble.detail));
-  // It must still not promise an iPhone something https cannot deliver.
-  assert.match(ble.detail, /iPhone/);
+  // And on a device that is not an iPhone, it does not talk about iPhones.
+  assert.ok(!/iPhone/.test(ble.detail));
 
   // On a secure origin the absence is real, and then it is named.
   const truly = assessBle(env({ hasWebBluetooth: false, secureContext: true }));

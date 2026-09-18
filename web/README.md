@@ -26,14 +26,13 @@ npm run build:web     # web/dist: a page, a 26 KB bundle, a manifest and an icon
 ```
 
 Open the second one on the phone — same Wi-Fi network as the PC — and the
-Wi-Fi upload works, **including on an iPhone**. That is the only way an iPhone
-can drive this board from a browser today, and it needs no hosting decision,
-no account and no App Store.
+Wi-Fi upload works, on any phone including an iPhone. It needs no hosting
+decision, no account and no App Store.
 
-What it cannot do from that address is Bluetooth, on any phone, because a
-plain-`http` LAN origin is not a secure context and browsers withhold the API
-entirely there. For Bluetooth from an Android phone you need an `https` host —
-see GitHub Pages below.
+What that address cannot do is Bluetooth, on any phone: a plain-`http` LAN
+origin is not a secure context, so browsers withhold the API entirely. For
+Bluetooth on a phone you need an `https` address — which is what GitHub Pages
+is for, below.
 
 ## Read this before deciding where to host it
 
@@ -45,7 +44,7 @@ everything**, so pick the one that matches what you need:
 |---|---|---|
 | `http://localhost` (`npm run serve:web`) | ✅ full | ⚠️ works, verdict inferred |
 | `http://<your-pc>` on the LAN — **what a phone opens** | ❌ blocked | ⚠️ works, verdict inferred |
-| `https://…` — GitHub Pages, or any web host | ✅ full | ❌ blocked |
+| `https://…` — GitHub Pages, or any web host | ✅ full (iPhone: in Bluefy) | ❌ blocked |
 | `http://<board>` (served by the board) | ❌ blocked | ✅ full |
 | `file://…` opened from disk | ❌ blocked | ❌ blocked |
 
@@ -72,10 +71,10 @@ manual-trigger only until Pages is turned on. Two things to know first.
 
 **Pages can only ever be the Bluetooth half.** Pages is HTTPS-only and
 `*.github.io` is in the browsers' HSTS preload list, so the scheme cannot be
-downgraded even by typing `http://`. A Pages deployment therefore can never
-reach the board over Wi-Fi. That makes it an excellent **Android** tool — any
-phone, Chrome, no install, full BLE upload and settings — and of **no use on an
-iPhone**, which has no Web Bluetooth to fall back on.
+downgraded even by typing `http://` — which means a Pages deployment can never
+reach the board over Wi-Fi. What it is, is the **Bluetooth** address for
+phones: Android in Chrome with nothing installed, and iPhone in Bluefy (see
+[iOS](#ios)).
 
 **It requires making this repository public.** Pages from a private repository
 needs GitHub Team for an organisation account, and `Bynarical` is on the free
@@ -107,16 +106,32 @@ phone uses for Wi-Fi uploads cannot install the app. It still runs there.
 
 ## iOS
 
-**There is no Bluetooth on iPhone or iPad, in any browser.** Safari has never
-shipped Web Bluetooth, and Apple requires every iOS browser to use WebKit, so
-Chrome and Firefox there cannot offer it either. On iOS this app is Wi-Fi
-only, which means the board has to be on the network already — and getting it
-onto a network is a Bluetooth job. In practice an iPhone can update a board
-that is already provisioned, and cannot provision a new one.
+**Safari has no Web Bluetooth, on any platform, and Apple requires every iOS
+browser to use WebKit** — so Chrome and Firefox on an iPhone cannot offer it
+either. That is Apple's decision and nothing in this app changes it.
 
-Full parity on iPhone needs the native app: the React Native codebase in the
-parent folder already has the iOS paths, and `eas build -p ios` builds it in
-the cloud without a Mac. That needs an Apple Developer Program membership.
+It is not a dead end, though. [Bluefy](https://apps.apple.com/us/app/bluefy-web-ble-browser/id1492822055)
+is a free App Store browser that ships its own BLE stack on top of
+CoreBluetooth. Open **this same page** in it over https and `navigator.bluetooth`
+is there, so Bluetooth upload and settings work with nothing to install from
+us. CoreBluetooth bonds on the first write to an encrypted characteristic, the
+way the native app does, so the firmware's `WRITE_ENC` gate should be satisfied
+without a pairing call — that part is reasoned from how CoreBluetooth behaves
+and has not been run against a board yet.
+
+The app detects an iPhone and says this itself, with a link, instead of sending
+you to Wi-Fi. Note the https requirement still applies inside Bluefy: the LAN
+address from `serve:web` is plain http, so use the Pages URL there.
+
+So, on an iPhone:
+
+| | |
+|---|---|
+| Bluetooth | the Pages URL, opened in Bluefy |
+| Wi-Fi | the LAN address from `npm run serve:web`, in any browser |
+
+A native iOS build (`eas build -p ios`, cloud, no Mac, Apple Developer
+membership) remains the option that needs no third-party browser.
 
 ## The cross-origin Wi-Fi mode, and why it is kept
 

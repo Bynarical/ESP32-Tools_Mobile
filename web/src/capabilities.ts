@@ -44,11 +44,30 @@ export interface PageEnv {
   /** Whether navigator.bluetooth exists. */
   hasWebBluetooth: boolean;
   /**
+   * An iPhone or iPad. Worth knowing, because it turns "no Bluetooth here"
+   * from a dead end into a one-app fix: WebKit has no Web Bluetooth, but a
+   * third-party browser that ships its own BLE stack does.
+   */
+  appleMobile?: boolean;
+  /**
    * The board address the user is aiming at, when they have chosen one. Used
    * only to decide same-origin, which is what CORS turns on.
    */
   boardHost?: string;
 }
+
+/**
+ * Where an iPhone user can get Web Bluetooth.
+ *
+ * Bluefy is a normal App Store browser carrying its own BLE stack on top of
+ * CoreBluetooth, so a page it opens gets `navigator.bluetooth` and the system
+ * bonds on the first encrypted write exactly as a native app would. Nothing in
+ * this app changes for it - it is the same API - which is what makes it worth
+ * naming instead of telling somebody their phone cannot do this.
+ */
+export const IOS_BLE_BROWSER = 'Bluefy';
+export const IOS_BLE_BROWSER_URL =
+  'https://apps.apple.com/us/app/bluefy-web-ble-browser/id1492822055';
 
 export interface Capabilities {
   ble: TransportState;
@@ -86,8 +105,24 @@ export function assessBle(env: PageEnv): TransportState {
         'Web Bluetooth is only offered to a secure context, and this page is ' +
         `on ${env.protocol}//${env.hostname}, which is not one - the browser ` +
         'hides the API completely. Open the app from http://localhost on a ' +
-        'computer, or serve it over https, and Bluetooth appears. On an ' +
-        'iPhone it will not appear either way; use Wi-Fi there.',
+        'computer, or over https from anywhere, and Bluetooth appears' +
+        (env.appleMobile
+          ? ` - on an iPhone that means the https address opened in ${IOS_BLE_BROWSER}.`
+          : '.'),
+    };
+  }
+  if (!env.hasWebBluetooth && env.appleMobile) {
+    return {
+      id: 'ble',
+      grade: 'unusable',
+      summary: `Open this page in ${IOS_BLE_BROWSER}`,
+      detail:
+        'Safari has never shipped Web Bluetooth, and Apple requires every ' +
+        'browser on iOS and iPadOS to use WebKit, so Chrome and Firefox here ' +
+        `cannot offer it either. ${IOS_BLE_BROWSER} is a free App Store ` +
+        'browser that carries its own Bluetooth stack: open this same page in ' +
+        'it and Bluetooth works, with no app to install from us. Otherwise ' +
+        'use Wi-Fi, which needs the board to be on the network already.',
     };
   }
   if (!env.hasWebBluetooth) {
@@ -97,10 +132,9 @@ export function assessBle(env: PageEnv): TransportState {
       summary: 'Not available in this browser',
       detail:
         'This browser has no Web Bluetooth. Safari has never shipped it on ' +
-        'any platform, and because every browser on iOS and iPadOS is ' +
-        'required to use WebKit, Chrome and Firefox on iPhone cannot offer ' +
-        'it either. Use Chrome or Edge on Windows, macOS, Linux or Android - ' +
-        'or, on iPhone, use Wi-Fi instead.',
+        'any platform; Firefox has not either. Use Chrome or Edge on ' +
+        'Windows, macOS, Linux or Android - or Wi-Fi, which any browser can ' +
+        'do as long as the page is served over plain http.',
     };
   }
   return {

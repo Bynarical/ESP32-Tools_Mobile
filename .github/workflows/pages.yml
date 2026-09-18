@@ -1,22 +1,16 @@
 # Publish web/ to GitHub Pages.
 #
-# Manual only, on purpose. Pages is not enabled on this repository yet, and a
-# push-triggered job would fail on every commit until it is. Once Pages is on
-# (Settings -> Pages -> Source: GitHub Actions), uncomment the `push` trigger
-# below and every change to the web app deploys itself.
-#
-# Read web/README.md before enabling this. Pages is HTTPS-only - *.github.io is
-# in the browsers' HSTS preload list, so the scheme cannot be downgraded - which
-# means a Pages deployment can do Bluetooth and can never reach the board over
-# Wi-Fi. That makes it an Android tool, and of no use on an iPhone, which has no
-# Web Bluetooth in any browser.
+# Pages is HTTPS-only - *.github.io is in the browsers' HSTS preload list, so
+# the scheme cannot be downgraded - which means this deployment is the
+# Bluetooth address and can never reach the board over Wi-Fi. For Wi-Fi, serve
+# the app over plain http on the LAN with `npm run serve:web`. See web/README.md.
 name: Deploy web app to Pages
 
 on:
   workflow_dispatch:
-  # push:
-  #   branches: [main]
-  #   paths: ['web/**', 'src/lib/**', 'src/ota/**', '.github/workflows/pages.yml']
+  push:
+    branches: [main]
+    paths: ['web/**', 'src/lib/**', 'src/ota/**', '.github/workflows/pages.yml']
 
 permissions:
   contents: read
