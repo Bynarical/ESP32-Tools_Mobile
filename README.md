@@ -158,7 +158,16 @@ src/ota/configSession.ts the settings write                 (pure, over an inter
 src/ota/firmwareFile.ts  picking and reading a .bin         (expo-file-system)
 src/ble/transport.ts     react-native-ble-plx adapter       (native)
 App.tsx                  the one screen
+assets/fonts/            Pretendard, embedded at build time
 ```
+
+Type is **Pretendard**, embedded by the `expo-font` config plugin in `app.json`
+rather than loaded with `useFonts` — the faces are registered natively, so
+there is no loading state and no flash of Roboto on launch. Three weights,
+400/600/700, which is all the styles use. It is the same family the desktop
+apps and the web app set, and it carries Hangul: a board may be named in
+Korean, which is why the settings fields count UTF-8 bytes rather than
+characters.
 
 The split is deliberate. Everything above `firmwareFile.ts` has no React Native
 or Expo import, which is what makes the part that can be *silently* wrong — the
